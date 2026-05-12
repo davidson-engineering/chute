@@ -14,14 +14,29 @@ A small CLI that converts between document formats with a curated tool stack —
 
 ## Install
 
-### Homebrew (recommended)
+### Recommended: `uv tool install`
 
 ```sh
-brew tap davidson-engineering/tap
-brew install chute
+uv tool install git+https://github.com/davidson-engineering/chute.git
 ```
 
-Pulls in `pandoc`, `weasyprint`, and a private Python venv containing `pymupdf4llm`.
+To pin a specific release:
+
+```sh
+uv tool install git+https://github.com/davidson-engineering/chute.git@v0.1.0
+```
+
+You'll also need `pandoc` and `weasyprint` on `PATH`:
+
+```sh
+brew install pandoc weasyprint
+```
+
+To upgrade later:
+
+```sh
+uv tool upgrade chute
+```
 
 ### From source
 
@@ -30,8 +45,6 @@ git clone https://github.com/davidson-engineering/chute.git
 cd chute
 uv tool install .
 ```
-
-You'll need `pandoc` and `weasyprint` on `PATH` separately.
 
 ## Usage
 
