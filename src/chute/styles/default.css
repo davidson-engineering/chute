@@ -1,109 +1,325 @@
+/* chute default stylesheet — minimal technical docs.
+ *
+ * IBM Plex Sans for prose, JetBrains Mono for code. Pure grayscale.
+ * Fonts are bundled alongside this file so PDFs render identically
+ * regardless of what's installed on the host.
+ */
+
+@font-face {
+    font-family: "IBM Plex Sans";
+    font-style: normal;
+    font-weight: 400;
+    src: url("fonts/IBMPlexSans-400.woff2") format("woff2");
+}
+
+@font-face {
+    font-family: "IBM Plex Sans";
+    font-style: italic;
+    font-weight: 400;
+    src: url("fonts/IBMPlexSans-400-italic.woff2") format("woff2");
+}
+
+@font-face {
+    font-family: "IBM Plex Sans";
+    font-style: normal;
+    font-weight: 600;
+    src: url("fonts/IBMPlexSans-600.woff2") format("woff2");
+}
+
+@font-face {
+    font-family: "IBM Plex Sans";
+    font-style: normal;
+    font-weight: 700;
+    src: url("fonts/IBMPlexSans-700.woff2") format("woff2");
+}
+
+@font-face {
+    font-family: "JetBrains Mono";
+    font-style: normal;
+    font-weight: 400;
+    src: url("fonts/JetBrainsMono.woff2") format("woff2");
+}
+
+@font-face {
+    font-family: "JetBrains Mono";
+    font-style: normal;
+    font-weight: 700;
+    src: url("fonts/JetBrainsMono-Bold.woff2") format("woff2");
+}
+
+:root {
+    --ink:      #111111;
+    --text:     #1a1a1a;
+    --muted:    #555555;
+    --faint:    #8a8a8a;
+    --rule:     #e3e3e3;
+    --rule-strong: #cccccc;
+    --bg:       #ffffff;
+    --bg-subtle: #f6f6f6;
+}
+
 @page {
     size: letter;
-    margin: 2cm 2.5cm;
+    margin: 2.2cm 2.2cm 2.4cm 2.2cm;
+
+    @bottom-right {
+        content: counter(page);
+        font-family: "IBM Plex Sans", sans-serif;
+        font-size: 8.5pt;
+        color: var(--faint);
+        font-feature-settings: "tnum";
+    }
+}
+
+@page :first {
+    @bottom-right { content: none; }
 }
 
 body {
-    font-family: Georgia, "Times New Roman", serif;
-    font-size: 11pt;
-    line-height: 1.55;
-    color: #222;
+    font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 10.5pt;
+    line-height: 1.65;
+    color: var(--text);
+    background: var(--bg);
+    hyphens: auto;
 }
 
+/* ── Headings ──────────────────────────────────────────────────────── */
+
 h1, h2, h3, h4, h5, h6 {
-    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
-    font-weight: 600;
+    font-family: "IBM Plex Sans", sans-serif;
+    color: var(--ink);
     line-height: 1.25;
-    margin-top: 1.5em;
-    margin-bottom: 0.5em;
+    margin-top: 1.8em;
+    margin-bottom: 0.55em;
+    page-break-after: avoid;
+    break-after: avoid;
+}
+
+h1:first-child,
+h2:first-child,
+h3:first-child {
+    margin-top: 0;
 }
 
 h1 {
     font-size: 2em;
-    border-bottom: 1px solid #ddd;
-    padding-bottom: 0.2em;
+    font-weight: 700;
+    letter-spacing: -0.015em;
+    margin-bottom: 0.7em;
 }
 
 h2 {
-    font-size: 1.5em;
-    border-bottom: 1px solid #eee;
-    padding-bottom: 0.15em;
+    font-size: 1.4em;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    padding-bottom: 0.25em;
+    border-bottom: 1px solid var(--rule);
 }
 
-h3 { font-size: 1.25em; }
-h4 { font-size: 1.1em; }
+h3 {
+    font-size: 1.12em;
+    font-weight: 600;
+}
 
-p { margin: 0.7em 0; }
+h4 {
+    font-size: 0.85em;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+h5, h6 {
+    font-size: 0.95em;
+    font-weight: 600;
+    color: var(--muted);
+}
+
+/* ── Body text ─────────────────────────────────────────────────────── */
+
+p {
+    margin: 0.75em 0;
+    orphans: 3;
+    widows: 3;
+}
+
+strong { font-weight: 600; color: var(--ink); }
+em     { font-style: italic; }
 
 a {
-    color: #0366d6;
-    text-decoration: none;
+    color: var(--ink);
+    text-decoration: underline;
+    text-decoration-color: var(--rule-strong);
+    text-underline-offset: 2px;
 }
 
-a:hover { text-decoration: underline; }
+/* ── Code ──────────────────────────────────────────────────────────── */
+
+code, kbd, samp, pre {
+    font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+}
 
 code {
-    font-family: "SF Mono", Menlo, Consolas, "Courier New", monospace;
-    font-size: 0.9em;
-    background: #f6f8fa;
-    padding: 0.15em 0.4em;
+    font-size: 0.88em;
+    background: var(--bg-subtle);
+    color: var(--ink);
+    padding: 0.12em 0.4em;
     border-radius: 3px;
+    white-space: nowrap;
 }
 
 pre {
-    background: #f6f8fa;
-    padding: 1em;
+    background: var(--bg-subtle);
+    border: 1px solid var(--rule);
     border-radius: 4px;
-    overflow-x: auto;
+    padding: 0.9em 1.1em;
+    margin: 1.2em 0;
     font-size: 0.85em;
-    line-height: 1.45;
+    line-height: 1.55;
+    page-break-inside: avoid;
+    break-inside: avoid;
 }
 
 pre code {
     background: none;
     padding: 0;
     font-size: inherit;
+    white-space: pre;
+    border-radius: 0;
 }
 
-blockquote {
-    border-left: 3px solid #dfe2e5;
-    padding: 0 1em;
-    color: #555;
-    margin: 1em 0;
+kbd {
+    font-size: 0.82em;
+    background: var(--bg);
+    border: 1px solid var(--rule-strong);
+    border-bottom-width: 2px;
+    border-radius: 3px;
+    padding: 0.1em 0.45em;
+    color: var(--muted);
 }
+
+/* ── Quotes ────────────────────────────────────────────────────────── */
+
+blockquote {
+    margin: 1.4em 0;
+    padding: 0.2em 0 0.2em 1.2em;
+    border-left: 2px solid var(--rule-strong);
+    color: var(--muted);
+}
+
+blockquote p:first-child { margin-top: 0; }
+blockquote p:last-child  { margin-bottom: 0; }
+
+/* ── Lists ─────────────────────────────────────────────────────────── */
+
+ul, ol {
+    margin: 0.8em 0;
+    padding-left: 1.6em;
+}
+
+li { margin: 0.25em 0; }
+li > p { margin: 0.4em 0; }
+
+ul ul, ul ol, ol ul, ol ol { margin: 0.2em 0; }
+
+/* ── Tables ────────────────────────────────────────────────────────── */
 
 table {
     border-collapse: collapse;
-    margin: 1em 0;
+    margin: 1.4em 0;
     width: 100%;
+    font-size: 0.95em;
+    font-variant-numeric: tabular-nums;
 }
 
-th, td {
-    border: 1px solid #ddd;
-    padding: 0.45em 0.7em;
-    text-align: left;
-    vertical-align: top;
+thead {
+    border-bottom: 1.5px solid var(--ink);
 }
 
 th {
-    background: #f6f8fa;
+    text-align: left;
     font-weight: 600;
+    padding: 0.55em 0.8em;
+    color: var(--ink);
 }
 
-ul, ol {
-    margin: 0.7em 0;
-    padding-left: 1.8em;
+td {
+    padding: 0.5em 0.8em;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
 }
 
-li { margin: 0.2em 0; }
+tr:last-child td { border-bottom: none; }
+
+/* ── Callouts (pandoc fenced divs: ::: note / tip / warning / danger) ── */
+
+.note, .tip, .warning, .danger {
+    margin: 1.4em 0;
+    padding: 0.7em 0 0.7em 1em;
+    border-left: 2px solid var(--ink);
+    color: var(--muted);
+    font-size: 0.97em;
+    page-break-inside: avoid;
+    break-inside: avoid;
+}
+
+.note > :first-child,
+.tip > :first-child,
+.warning > :first-child,
+.danger > :first-child { margin-top: 0; }
+
+.note > :last-child,
+.tip > :last-child,
+.warning > :last-child,
+.danger > :last-child { margin-bottom: 0; }
+
+/* ── Misc ──────────────────────────────────────────────────────────── */
 
 img {
     max-width: 100%;
     height: auto;
+    page-break-inside: avoid;
+    break-inside: avoid;
+}
+
+figure {
+    margin: 1.4em 0;
+    text-align: center;
+}
+
+figcaption {
+    font-size: 0.88em;
+    color: var(--muted);
+    margin-top: 0.5em;
 }
 
 hr {
     border: none;
-    border-top: 1px solid #ddd;
-    margin: 2em 0;
+    height: 1px;
+    background: var(--rule);
+    margin: 2.5em auto;
+    width: 50%;
 }
+
+abbr[title] {
+    text-decoration: underline dotted;
+    cursor: help;
+}
+
+dl { margin: 1em 0; }
+dt { font-weight: 600; margin-top: 0.6em; color: var(--ink); }
+dd { margin: 0.2em 0 0.6em 1.2em; color: var(--muted); }
+
+sup, sub { font-size: 0.75em; line-height: 0; }
+
+/* Footnotes (pandoc default markup) */
+.footnotes {
+    margin-top: 3em;
+    padding-top: 1em;
+    border-top: 1px solid var(--rule);
+    font-size: 0.88em;
+    color: var(--muted);
+}
+
+.footnotes ol { padding-left: 1.4em; }
