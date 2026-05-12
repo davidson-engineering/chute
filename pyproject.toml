@@ -21,5 +21,14 @@ Repository = "https://github.com/davidson-engineering/chute"
 [project.scripts]
 chute = "chute.cli:main"
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/chute"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

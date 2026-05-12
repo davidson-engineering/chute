@@ -44,7 +44,7 @@ def default_stylesheet() -> Path:
 
 def resolved_css(user_css: list[Path] | None, no_style: bool) -> list[Path]:
     if no_style:
-        return list(user_css or [])
+        return []
     if user_css:
         return list(user_css)
     return [default_stylesheet()]
