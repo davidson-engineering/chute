@@ -1,6 +1,6 @@
 # chute — document pipeline
 
-A small CLI that converts between document formats with a curated tool stack — Pandoc for the structural conversions, `pymupdf4llm` for reading PDFs, WeasyPrint for clean PDF output. Bundles a default stylesheet so PDF/HTML output looks reasonable without any configuration.
+A small CLI that converts between document formats with a curated tool stack — Pandoc for the structural conversions, `pymupdf4llm` for reading PDFs, WeasyPrint for clean PDF output. Ships with a bundled stylesheet and two web fonts (IBM Plex Sans, JetBrains Mono) so PDF/HTML output looks identical on any machine, with no configuration.
 
 ## Supported routes
 
@@ -10,7 +10,7 @@ A small CLI that converts between document formats with a curated tool stack —
 | `pdf`     | ✓   | —      | — | —      |
 | `md`      | —   | ✓ +css | ✓ | ✓ +css |
 
-`+css` means the conversion respects the default stylesheet and any `--css` overrides.
+`+css` means the conversion is styled by default. Pass `--css <file>` to replace the bundled stylesheet, or `--no-style` to disable styling entirely.
 
 ## Install
 
@@ -26,11 +26,22 @@ To pin a specific release:
 uv tool install git+https://github.com/davidson-engineering/chute.git@v0.1.0
 ```
 
-You'll also need `pandoc` and `weasyprint` on `PATH`:
+You'll also need `pandoc` and `weasyprint` on `PATH`.
+
+**macOS:**
 
 ```sh
 brew install pandoc weasyprint
 ```
+
+**Debian / Ubuntu:**
+
+```sh
+sudo apt install pandoc libpango-1.0-0 libpangoft2-1.0-0
+uv tool install weasyprint  # or pipx install weasyprint
+```
+
+(WeasyPrint depends on Pango/Cairo native libraries — the `libpango*` packages provide them.)
 
 To upgrade later:
 
@@ -70,12 +81,36 @@ chute ./docs -t pdf -r -o ./out                # batch: mirror tree, convert to 
 
 ## Styling
 
-By default, every `pdf` or `html` output is rendered with the bundled stylesheet (`src/chute/styles/default.css`) — clean serif body, GitHub-ish code blocks, sensible page margins.
+By default, every `pdf` or `html` output is rendered with the bundled stylesheet — minimal grayscale, IBM Plex Sans for prose, JetBrains Mono for code. Both fonts are embedded in the package, so output renders identically regardless of what's installed on the host.
 
 - `--css <file>` — replaces the default stylesheet. Pass multiple times to concatenate.
 - `--no-style` — disable the default (and any `--css`).
 
 CSS is plumbed through pandoc to weasyprint, so anything WeasyPrint supports (including `@page` rules for margins, page size, headers/footers) works.
+
+### Callouts
+
+The default stylesheet recognises pandoc fenced divs as callout boxes:
+
+```md
+::: note
+Heads-up about something the reader should be aware of.
+:::
+
+::: warning
+Something that can go wrong.
+:::
+
+::: tip
+A helpful aside.
+:::
+
+::: danger
+Critical — don't ignore.
+:::
+```
+
+Each renders as a block with a subtle left rule. Override the `.note`, `.tip`, `.warning`, `.danger` selectors with `--css` to change the look.
 
 ## Environment
 
@@ -83,6 +118,19 @@ CSS is plumbed through pandoc to weasyprint, so anything WeasyPrint supports (in
 |----------------------|---------------|--------|
 | `CHUTE_PDF_ENGINE`   | `weasyprint`  | Pandoc `--pdf-engine` value for PDF output. |
 
+## Development
+
+```sh
+git clone https://github.com/davidson-engineering/chute.git
+cd chute
+uv sync --group dev
+uv run pytest
+```
+
+The test suite stubs pandoc/pymupdf4llm by default and runs in well under a second. Integration tests that exercise the real toolchain run automatically if `pandoc` and `weasyprint` are on `PATH`; otherwise they're skipped.
+
 ## License
 
-MIT — see [LICENSE](LICENSE).
+chute itself is MIT — see [LICENSE](LICENSE).
+
+The bundled fonts are distributed under the [SIL Open Font License 1.1](https://openfontlicense.org/) — see [`src/chute/styles/fonts/`](src/chute/styles/fonts/) for the original copyright notices and license texts.

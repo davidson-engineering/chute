@@ -4,12 +4,27 @@ build-backend = "hatchling.build"
 
 [project]
 name = "chute"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Document pipeline — convert between docx, md, pdf, and html with a curated stack"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [{ name = "Matthew Davidson" }]
+keywords = ["pandoc", "weasyprint", "markdown", "pdf", "docx", "document conversion"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Text Processing",
+    "Topic :: Text Processing :: Markup :: Markdown",
+    "Topic :: Text Processing :: Markup :: HTML",
+]
 dependencies = [
     "pymupdf4llm>=0.0.17",
 ]
@@ -17,6 +32,7 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/davidson-engineering/chute"
 Repository = "https://github.com/davidson-engineering/chute"
+Issues = "https://github.com/davidson-engineering/chute/issues"
 
 [project.scripts]
 chute = "chute.cli:main"
@@ -26,8 +42,20 @@ dev = [
     "pytest>=8.0",
 ]
 
+[tool.hatch.version]
+path = "src/chute/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/chute"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/chute",
+    "tests",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
