@@ -17,14 +17,14 @@ jobs:
       - name: Update formula in davidson-engineering/homebrew-tap
         uses: mislav/bump-homebrew-formula-action@v3
         with:
-          formula-name: mpp
-          formula-path: Formula/mpp.rb
+          formula-name: chute
+          formula-path: Formula/chute.rb
           homebrew-tap: davidson-engineering/homebrew-tap
           base-branch: main
           tag-name: ${{ inputs.tag || github.ref_name }}
-          download-url: https://github.com/davidson-engineering/mpp/archive/refs/tags/${{ inputs.tag || github.ref_name }}.tar.gz
+          download-url: https://github.com/davidson-engineering/chute/archive/refs/tags/${{ inputs.tag || github.ref_name }}.tar.gz
           commit-message: |
-            mpp {{version}}
+            chute {{version}}
 
             Created by https://github.com/mislav/bump-homebrew-formula-action
         env:

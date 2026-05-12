@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "chute"
+version = "0.1.0"
+description = "Document pipeline — convert between docx, md, pdf, and html with a curated stack"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Matthew Davidson" }]
+dependencies = [
+    "pymupdf4llm>=0.0.17",
+]
+
+[project.urls]
+Homepage = "https://github.com/davidson-engineering/chute"
+Repository = "https://github.com/davidson-engineering/chute"
+
+[project.scripts]
+chute = "chute.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chute"]
