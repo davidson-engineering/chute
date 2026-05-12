@@ -10,3 +10,11 @@
 # Local test outputs
 markdown_out/
 *.tmp
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+dist/
+build/

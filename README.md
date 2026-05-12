@@ -1,17 +1,16 @@
-# mpp — markdown pipeline
+# chute — document pipeline
 
-A small bash CLI that converts documents to Markdown by routing each file to the right tool:
+A small CLI that converts between document formats with a curated tool stack — Pandoc for the structural conversions, `pymupdf4llm` for reading PDFs, WeasyPrint for clean PDF output. Bundles a default stylesheet so PDF/HTML output looks reasonable without any configuration.
 
-| Extension | Tool          | Why |
-|-----------|---------------|-----|
-| `.docx`   | `pandoc`      | Fast, structural — preserves headings, lists, tables. |
-| `.pdf`    | `marker_single` | ML-based — handles complex layouts, tables, equations, scanned pages. |
+## Supported routes
 
-It works on a single file or a whole directory tree, and mirrors the input layout under the output directory.
+| From \ To | `md` | `pdf` | `docx` | `html` |
+|-----------|:---:|:---:|:---:|:---:|
+| `docx`    | ✓   | ✓ +css | — | ✓ +css |
+| `pdf`     | ✓   | —      | — | —      |
+| `md`      | —   | ✓ +css | ✓ | ✓ +css |
 
-## Why
-
-`pandoc` is excellent for native formats but treats PDFs as flat text. `marker` handles messy PDFs well but is slow and brittle on `.docx` (its docx pipeline goes via weasyprint, which often produces malformed PDFs). `mpp` picks the right tool per file so you don't have to.
+`+css` means the conversion respects the default stylesheet and any `--css` overrides.
 
 ## Install
 
@@ -19,72 +18,57 @@ It works on a single file or a whole directory tree, and mirrors the input layou
 
 ```sh
 brew tap davidson-engineering/tap
-brew install mpp
+brew install chute
 ```
 
-This installs `pandoc` and `bash` automatically. You still need `marker_single` for PDF support:
-
-```sh
-uv tool install marker-pdf   # or: pipx install marker-pdf
-```
+Pulls in `pandoc`, `weasyprint`, and a private Python venv containing `pymupdf4llm`.
 
 ### From source
 
-Requires:
-- [pandoc](https://pandoc.org/) (`brew install pandoc`)
-- [marker](https://github.com/datalab-to/marker) (`uv tool install marker-pdf`)
-- bash 4+ (`brew install bash` on macOS)
-
-Then:
-
 ```sh
-git clone https://github.com/davidson-engineering/mpp.git
-cd mpp
-make install
+git clone https://github.com/davidson-engineering/chute.git
+cd chute
+uv tool install .
 ```
 
-This symlinks `bin/mpp` into `~/.local/bin/mpp`. Make sure `~/.local/bin` is on your `PATH`. To install elsewhere: `make install PREFIX=/usr/local`.
+You'll need `pandoc` and `weasyprint` on `PATH` separately.
 
 ## Usage
 
 ```text
-mpp <input> [-o <output>] [-r|--recursive]
+chute <input> [-o <output>] [-t <format>] [-r] [--css <file>] [--no-style]
 ```
 
-### Single file
+**Rules for choosing the output:**
+- `-o file.ext` — exact path; extension determines target format
+- `-t format` — implicit path `./<stem>.<format>` (or `<dir>/<stem>.<format>` if `-o` is a directory)
+- For a directory input, `-t` is required
+
+### Examples
 
 ```sh
-mpp resume.docx                   # → ./markdown_out/resume.md
-mpp resume.docx -o ./out/         # → ./out/resume.md
-mpp resume.docx -o resume.md      # exact file path
-mpp paper.pdf  -o ./out/          # → ./out/paper.md
+chute report.docx -o report.pdf                # docx → styled PDF
+chute report.docx -t html                      # → ./report.html, styled
+chute paper.pdf -t md                          # → ./paper.md
+chute notes.md -o notes.pdf --css print.css    # md → PDF with your CSS
+chute notes.md -o notes.pdf --no-style         # md → PDF, no styling at all
+chute ./docs -t pdf -r -o ./out                # batch: mirror tree, convert to PDF
 ```
 
-### Directory
+## Styling
 
-```sh
-mpp ./docs                        # converts *.docx and *.pdf in ./docs
-mpp ./docs -o ./md                # writes results to ./md/
-mpp ./docs -o ./md --recursive    # recurses, mirroring tree under ./md/
-```
+By default, every `pdf` or `html` output is rendered with the bundled stylesheet (`src/chute/styles/default.css`) — clean serif body, GitHub-ish code blocks, sensible page margins.
 
-## Behaviour
+- `--css <file>` — replaces the default stylesheet. Pass multiple times to concatenate.
+- `--no-style` — disable the default (and any `--css`).
 
-- **Default output:** `./markdown_out/`.
-- **Single file + `-o file.md`:** writes to that exact path.
-- **Single file + `-o dir/`:** writes `dir/<stem>.md`.
-- **Directory:** mirrors the input tree under the output directory (full tree if `--recursive`, top-level only otherwise).
-- **Unsupported extensions:** skipped with a warning to stderr.
-- **Marker output flattening:** `marker_single` writes to a nested `<stem>/<stem>.md` directory by default; `mpp` flattens this so you get a single `.md` per input.
+CSS is plumbed through pandoc to weasyprint, so anything WeasyPrint supports (including `@page` rules for margins, page size, headers/footers) works.
 
-## Exit codes
+## Environment
 
-| Code | Meaning |
-|------|---------|
-| 0    | Success |
-| 1    | Input not found, or no compatible files in directory |
-| 2    | Bad arguments |
-| 127  | `pandoc` or `marker_single` not on `PATH` |
+| Variable             | Default       | Effect |
+|----------------------|---------------|--------|
+| `CHUTE_PDF_ENGINE`   | `weasyprint`  | Pandoc `--pdf-engine` value for PDF output. |
 
 ## License
 
