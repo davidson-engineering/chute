@@ -15,6 +15,21 @@ It works on a single file or a whole directory tree, and mirrors the input layou
 
 ## Install
 
+### Homebrew (recommended)
+
+```sh
+brew tap davidson-engineering/tap
+brew install mpp
+```
+
+This installs `pandoc` and `bash` automatically. You still need `marker_single` for PDF support:
+
+```sh
+uv tool install marker-pdf   # or: pipx install marker-pdf
+```
+
+### From source
+
 Requires:
 - [pandoc](https://pandoc.org/) (`brew install pandoc`)
 - [marker](https://github.com/datalab-to/marker) (`uv tool install marker-pdf`)
@@ -28,13 +43,7 @@ cd mpp
 make install
 ```
 
-This symlinks `bin/mpp` into `~/.local/bin/mpp`. Make sure `~/.local/bin` is on your `PATH`.
-
-To install elsewhere:
-
-```sh
-make install PREFIX=/usr/local
-```
+This symlinks `bin/mpp` into `~/.local/bin/mpp`. Make sure `~/.local/bin` is on your `PATH`. To install elsewhere: `make install PREFIX=/usr/local`.
 
 ## Usage
 
