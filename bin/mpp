@@ -16,6 +16,8 @@
 
 set -euo pipefail
 
+MPP_VERSION="0.1.0"
+
 usage() {
     cat <<'EOF'
 Usage: mpp <input> [-o <output>] [-r|--recursive]
@@ -28,6 +30,7 @@ Options:
   -o, --output <path>   Output file or directory (default: ./markdown_out/)
   -r, --recursive       Recurse into subdirectories
   -h, --help            Show this help
+  -V, --version         Show version
 
 Examples:
   mpp resume.docx                          # → ./markdown_out/resume.md
@@ -53,6 +56,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -h|--help)
             usage
+            exit 0
+            ;;
+        -V|--version)
+            echo "mpp $MPP_VERSION"
             exit 0
             ;;
         --)
