@@ -253,7 +253,140 @@ class TestMainBatch:
         assert "no convertible files" in str(exc.value)
 
 
+# ---- new flags: -f/--from, -v, -q, stdin/stdout ---------------------------
+
+
+class TestFromFlag:
+    def test_from_overrides_extension(self, tmp_path, fake_pandoc):
+        """A .txt file processed with -f md should follow the md→html route."""
+        src = tmp_path / "doc.txt"
+        src.write_text("# hi")
+        dst = tmp_path / "doc.html"
+        rc = cli.main([str(src), "-o", str(dst), "-f", "md"])
+        assert rc == 0
+        # the pandoc invocation should have happened (md→html route)
+        assert fake_pandoc, "expected pandoc to be invoked"
+
+    def test_from_unsupported_exits(self, tmp_path):
+        src = tmp_path / "doc.md"
+        src.write_text("# hi")
+        with pytest.raises(SystemExit) as exc:
+            cli.main([str(src), "-o", str(tmp_path / "doc.html"), "-f", "rtf"])
+        assert "unsupported source format" in str(exc.value)
+
+    def test_from_filters_batch(self, sample_files, fake_pandoc, tmp_path):
+        """-f md in a batch should only convert .md files, skipping docx."""
+        out = tmp_path / "out"
+        rc = cli.main([str(sample_files), "-t", "html", "-f", "md", "-o", str(out)])
+        assert rc == 0
+        assert (out / "b.html").exists()           # b.md picked up
+        assert not (out / "a.html").exists()       # a.docx filtered out
+
+
+class TestVerbosity:
+    def test_default_is_silent_on_stdout(self, tmp_path, fake_pandoc, capsys):
+        src = tmp_path / "doc.md"
+        src.write_text("# hi")
+        rc = cli.main([str(src), "-o", str(tmp_path / "doc.pdf")])
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+
+    def test_verbose_prints_progress_to_stderr(self, tmp_path, fake_pandoc, capsys):
+        src = tmp_path / "doc.md"
+        src.write_text("# hi")
+        dst = tmp_path / "doc.pdf"
+        rc = cli.main([str(src), "-o", str(dst), "-v"])
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "[pandoc+weasyprint]" in captured.err
+        assert "→" in captured.err
+
+    def test_skip_warning_to_stderr_by_default(self, tmp_path, capsys):
+        src = tmp_path / "x.pdf"
+        src.write_bytes(b"")
+        dst = tmp_path / "x.docx"
+        rc = cli.main([str(src), "-o", str(dst)])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "no route" in err
+
+    def test_quiet_suppresses_skip_warning(self, tmp_path, capsys):
+        src = tmp_path / "x.pdf"
+        src.write_bytes(b"")
+        dst = tmp_path / "x.docx"
+        rc = cli.main([str(src), "-o", str(dst), "-q"])
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_quiet_does_not_suppress_fatal(self, tmp_path):
+        """fail() bypasses -q — exit message must still appear."""
+        with pytest.raises(SystemExit) as exc:
+            cli.main([str(tmp_path / "missing.md"), "-t", "pdf", "-q"])
+        assert "not found" in str(exc.value)
+
+
+class TestStdin:
+    def test_stdin_requires_from(self, monkeypatch):
+        monkeypatch.setattr("sys.stdin", _stdin_with(b"# hi"))
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["-", "-o", "out.html"])
+        assert "requires -f" in str(exc.value)
+
+    def test_stdin_md_to_html(self, tmp_path, fake_pandoc, monkeypatch):
+        dst = tmp_path / "out.html"
+        monkeypatch.setattr("sys.stdin", _stdin_with(b"# hi"))
+        rc = cli.main(["-", "-f", "md", "-o", str(dst)])
+        assert rc == 0
+        assert dst.exists()
+        # pandoc was called with a temp file (not literally "-")
+        args = _last_pandoc_args(fake_pandoc)
+        assert any(a.endswith(".md") for a in args)
+
+    def test_stdin_unsupported_format(self, monkeypatch):
+        monkeypatch.setattr("sys.stdin", _stdin_with(b"x"))
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["-", "-f", "rtf", "-o", "out.html"])
+        assert "unsupported source format" in str(exc.value)
+
+
+class TestStdout:
+    def test_stdout_requires_to(self, tmp_path):
+        src = tmp_path / "doc.md"
+        src.write_text("# hi")
+        with pytest.raises(SystemExit) as exc:
+            cli.main([str(src), "-o", "-"])
+        assert "requires -t" in str(exc.value)
+
+    def test_stdout_emits_bytes(self, tmp_path, fake_pandoc, capsysbinary):
+        src = tmp_path / "doc.md"
+        src.write_text("# hi")
+        rc = cli.main([str(src), "-o", "-", "-t", "html"])
+        assert rc == 0
+        captured = capsysbinary.readouterr()
+        # fake_pandoc writes b"stub" to the output path; we should see that on stdout
+        assert captured.out == b"stub"
+
+    def test_directory_input_rejects_stdout(self, sample_files):
+        with pytest.raises(SystemExit) as exc:
+            cli.main([str(sample_files), "-t", "html", "-o", "-"])
+        assert "incompatible with a directory input" in str(exc.value)
+
+
 # ---- packaging sanity -----------------------------------------------------
+
+
+def _stdin_with(data: bytes):
+    """Build a minimal stdin replacement whose .buffer yields `data`."""
+    import io
+    import types
+
+    buf = io.BytesIO(data)
+    stub = types.SimpleNamespace(buffer=buf)
+    return stub
 
 
 def test_default_stylesheet_resource_exists():

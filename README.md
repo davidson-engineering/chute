@@ -60,13 +60,25 @@ uv tool install .
 ## Usage
 
 ```text
-chute <input> [-o <output>] [-t <format>] [-r] [--css <file>] [--no-style]
+chute <input|-> [-o <output|->] [-f <format>] [-t <format>]
+                [-r] [--css <file>] [--no-style] [-v|-q]
 ```
 
 **Rules for choosing the output:**
 - `-o file.ext` — exact path; extension determines target format
 - `-t format` — implicit path `./<stem>.<format>` (or `<dir>/<stem>.<format>` if `-o` is a directory)
 - For a directory input, `-t` is required
+- `-o -` writes the result to stdout; `-t` is required to pick the format
+
+**Source format override (`-f`):**
+- Overrides the input file's extension (e.g., a `.txt` file you want treated as markdown)
+- Required when reading from stdin (`-`) — there's no extension to infer from
+- In batch mode, filters the directory to one input format
+
+**Verbosity:**
+- Default: silent on success, errors and skip warnings on stderr
+- `-v` / `--verbose` — print per-file progress to stderr (`[pandoc] src → dst`)
+- `-q` / `--quiet` — suppress skip warnings (fatal errors still print)
 
 ### Examples
 
@@ -77,7 +89,22 @@ chute paper.pdf -t md                          # → ./paper.md
 chute notes.md -o notes.pdf --css print.css    # md → PDF with your CSS
 chute notes.md -o notes.pdf --no-style         # md → PDF, no styling at all
 chute ./docs -t pdf -r -o ./out                # batch: mirror tree, convert to PDF
+chute ./docs -t pdf -r -o ./out -f md          # batch: only convert .md files
 ```
+
+### Unix pipelines
+
+`-` reads from stdin or writes to stdout, so `chute` slots into a pipeline:
+
+```sh
+cat notes.md | chute - -f md -t html > notes.html       # stdin → stdout
+chute report.docx -t pdf -o - > report.pdf              # file → stdout
+cat report.docx | chute - -f docx -t pdf > report.pdf   # stdin → stdout
+```
+
+stdin/stdout is staged through a temp file internally (pandoc and `pymupdf4llm`
+both want real paths), so streaming behavior is not preserved — but the
+pipeline shape works as expected.
 
 ## Styling
 
