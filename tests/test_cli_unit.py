@@ -175,6 +175,25 @@ class TestMainSingleFile:
         assert rc == 0
         assert dst.read_text().startswith("# stub markdown")
 
+    def test_pdf_to_md_suppresses_implicit_ocr(self, tmp_path, fake_pymupdf):
+        """On the layout parser, chute must pass use_ocr=False so an image-heavy
+        page's native text isn't clobbered by pymupdf4llm's own OCR."""
+        src = tmp_path / "p.pdf"
+        src.write_bytes(b"%PDF-1.4 fake")
+        rc = cli.main([str(src), "-o", str(tmp_path / "p.md")])
+        assert rc == 0
+        assert fake_pymupdf.calls[-1][1] == {"use_ocr": False}
+
+    def test_pdf_to_md_legacy_parser_passes_no_kwargs(self, tmp_path, fake_pymupdf):
+        """Legacy-parser builds have no use_ocr kwarg; don't pass it (it would
+        print a warning to stdout)."""
+        fake_pymupdf._use_layout = False
+        src = tmp_path / "p.pdf"
+        src.write_bytes(b"%PDF-1.4 fake")
+        rc = cli.main([str(src), "-o", str(tmp_path / "p.md")])
+        assert rc == 0
+        assert fake_pymupdf.calls[-1][1] == {}
+
     def test_pdf_to_md_ocr_runs_ocrmypdf(self, tmp_path, fake_pandoc, fake_pymupdf):
         src = tmp_path / "scan.pdf"
         src.write_bytes(b"%PDF-1.4 fake")
@@ -186,6 +205,9 @@ class TestMainSingleFile:
         assert len(ocr_calls) == 1
         assert "--force-ocr" in ocr_calls[0]
         assert ocr_calls[0][1] == "--force-ocr"
+        # The --ocr path must NOT suppress pymupdf4llm's reader: the ocrmypdf'd
+        # PDF's only text is the OCR layer, so use_ocr=False would drop it.
+        assert fake_pymupdf.calls[-1][1] == {}
 
     def test_ocr_ignored_for_non_pdf_route(self, tmp_path, fake_pandoc):
         """--ocr is a no-op for routes other than pdf→md; no ocrmypdf call."""

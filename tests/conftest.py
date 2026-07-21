@@ -27,11 +27,23 @@ def fake_pandoc(monkeypatch):
 
 @pytest.fixture
 def fake_pymupdf(monkeypatch):
-    """Stub pymupdf4llm so pdf→md doesn't require a real PDF."""
+    """Stub pymupdf4llm so pdf→md doesn't require a real PDF.
+
+    Models the modern layout parser (`_use_layout=True`) and records each
+    to_markdown call's kwargs on `mod.calls` so tests can assert chute
+    suppresses the implicit OCR pass.
+    """
     import types
 
     mod = types.ModuleType("pymupdf4llm")
-    mod.to_markdown = lambda path: f"# stub markdown for {path}\n"
+    mod._use_layout = True
+    mod.calls = []
+
+    def to_markdown(path, **kwargs):
+        mod.calls.append((path, kwargs))
+        return f"# stub markdown for {path}\n"
+
+    mod.to_markdown = to_markdown
     monkeypatch.setitem(__import__("sys").modules, "pymupdf4llm", mod)
     return mod
 

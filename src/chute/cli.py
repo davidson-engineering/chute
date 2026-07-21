@@ -103,10 +103,32 @@ def docx_to_html(src: Path, dst: Path, css: list[Path]) -> None:
     ])
 
 
-def pdf_to_md(src: Path, dst: Path, _css: list[Path]) -> None:
+def _pdf_markdown(path: Path, *, allow_ocr: bool) -> str:
+    """Extract markdown from a PDF via pymupdf4llm.
+
+    `allow_ocr` controls pymupdf4llm's own (layout-parser) OCR pass:
+
+    - False — the default pdf→md route. Newer pymupdf4llm rasterizes and OCRs
+      image-heavy pages, silently discarding a page's real text layer when its
+      own OCR does worse (e.g. a statement page dominated by a logo). chute
+      owns OCR explicitly via --ocr, so suppress the implicit pass and keep the
+      native text.
+    - True — the --ocr route. The source has just been through ocrmypdf, so
+      every page carries a fresh OCR text layer; let pymupdf4llm read it back.
+
+    `use_ocr` only exists on the layout path, so gate on `_use_layout` to stay
+    quiet on older, legacy-parser builds.
+    """
     import pymupdf4llm
 
-    dst.write_text(pymupdf4llm.to_markdown(str(src)))
+    kwargs = {}
+    if not allow_ocr and getattr(pymupdf4llm, "_use_layout", False):
+        kwargs["use_ocr"] = False
+    return pymupdf4llm.to_markdown(str(path), **kwargs)
+
+
+def pdf_to_md(src: Path, dst: Path, _css: list[Path]) -> None:
+    dst.write_text(_pdf_markdown(src, allow_ocr=False))
 
 
 def pdf_to_md_ocr(src: Path, dst: Path, _css: list[Path]) -> None:
@@ -115,8 +137,6 @@ def pdf_to_md_ocr(src: Path, dst: Path, _css: list[Path]) -> None:
     ocrmypdf lays down a Tesseract text layer; pymupdf4llm reads it back the
     same way it reads a born-digital PDF.
     """
-    import pymupdf4llm
-
     require_tool("ocrmypdf")
     ocr_pdf = _stdout_target("pdf")  # scratch PDF with a fresh text layer
     try:
@@ -124,7 +144,7 @@ def pdf_to_md_ocr(src: Path, dst: Path, _css: list[Path]) -> None:
             ["ocrmypdf", "--force-ocr", str(src), str(ocr_pdf)],
             check=True,
         )
-        dst.write_text(pymupdf4llm.to_markdown(str(ocr_pdf)))
+        dst.write_text(_pdf_markdown(ocr_pdf, allow_ocr=True))
     finally:
         _unlink_quietly(ocr_pdf)
 
