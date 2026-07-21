@@ -61,7 +61,7 @@ uv tool install .
 
 ```text
 chute <input|-> [-o <output|->] [-f <format>] [-t <format>]
-                [-r] [--css <file>] [--no-style] [-v|-q]
+                [-r] [--css <file>] [--no-style] [--ocr] [-v|-q]
 ```
 
 **Rules for choosing the output:**
@@ -75,6 +75,11 @@ chute <input|-> [-o <output|->] [-f <format>] [-t <format>]
 - Required when reading from stdin (`-`) — there's no extension to infer from
 - In batch mode, filters the directory to one input format
 
+**OCR (`--ocr`):**
+- For `pdf → md` only; a no-op for every other route
+- Lays down a Tesseract text layer with `ocrmypdf` before extraction — use it for scanned or image-only PDFs whose text `pymupdf4llm` can't read
+- Requires `ocrmypdf` on `PATH` (`brew install ocrmypdf` / `sudo apt install ocrmypdf`)
+
 **Verbosity:**
 - Default: silent on success, errors and skip warnings on stderr
 - `-v` / `--verbose` — print per-file progress to stderr (`[pandoc] src → dst`)
@@ -86,6 +91,7 @@ chute <input|-> [-o <output|->] [-f <format>] [-t <format>]
 chute report.docx -o report.pdf                # docx → styled PDF
 chute report.docx -t html                      # → ./report.html, styled
 chute paper.pdf -t md                          # → ./paper.md
+chute scan.pdf -t md --ocr                      # scanned PDF → md via OCR
 chute notes.md -o notes.pdf --css print.css    # md → PDF with your CSS
 chute notes.md -o notes.pdf --no-style         # md → PDF, no styling at all
 chute ./docs -t pdf -r -o ./out                # batch: mirror tree, convert to PDF

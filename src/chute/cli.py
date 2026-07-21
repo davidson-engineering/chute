@@ -109,6 +109,26 @@ def pdf_to_md(src: Path, dst: Path, _css: list[Path]) -> None:
     dst.write_text(pymupdf4llm.to_markdown(str(src)))
 
 
+def pdf_to_md_ocr(src: Path, dst: Path, _css: list[Path]) -> None:
+    """OCR a (scanned/image-only) PDF, then extract markdown.
+
+    ocrmypdf lays down a Tesseract text layer; pymupdf4llm reads it back the
+    same way it reads a born-digital PDF.
+    """
+    import pymupdf4llm
+
+    require_tool("ocrmypdf")
+    ocr_pdf = _stdout_target("pdf")  # scratch PDF with a fresh text layer
+    try:
+        subprocess.run(
+            ["ocrmypdf", "--force-ocr", str(src), str(ocr_pdf)],
+            check=True,
+        )
+        dst.write_text(pymupdf4llm.to_markdown(str(ocr_pdf)))
+    finally:
+        _unlink_quietly(ocr_pdf)
+
+
 def md_to_pdf(src: Path, dst: Path, css: list[Path]) -> None:
     require_tool(PDF_ENGINE)
     _pandoc([
@@ -145,9 +165,9 @@ ROUTES: dict[tuple[str, str], Converter] = {
 }
 
 
-def route_tag(in_ext: str, out_ext: str) -> str:
+def route_tag(in_ext: str, out_ext: str, *, ocr: bool = False) -> str:
     if (in_ext, out_ext) == ("pdf", "md"):
-        return "pymupdf4llm"
+        return "ocrmypdf+pymupdf4llm" if ocr else "pymupdf4llm"
     if out_ext == "pdf":
         return f"pandoc+{PDF_ENGINE}"
     return "pandoc"
@@ -166,6 +186,7 @@ def convert_one(
     out_ext: str | None = None,
     src_display: str | None = None,
     dst_display: str | None = None,
+    ocr: bool = False,
     verbose: bool = False,
     quiet: bool = False,
 ) -> bool:
@@ -180,9 +201,16 @@ def convert_one(
             quiet=quiet,
         )
         return False
+    # --ocr only reshapes the pdf→md route; it is a no-op for anything else.
+    ocr = ocr and (in_ext, out_ext) == ("pdf", "md")
+    if ocr:
+        route = pdf_to_md_ocr
     dst.parent.mkdir(parents=True, exist_ok=True)
     effective_css = css if out_ext in STYLED_OUTPUTS else []
-    info(f"[{route_tag(in_ext, out_ext)}] {src_label} → {dst_label}", verbose=verbose)
+    info(
+        f"[{route_tag(in_ext, out_ext, ocr=ocr)}] {src_label} → {dst_label}",
+        verbose=verbose,
+    )
     route(src, dst, effective_css)
     return True
 
@@ -230,6 +258,13 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument(
         "--no-style", action="store_true",
         help="disable the default stylesheet (and any --css)",
+    )
+    p.add_argument(
+        "--ocr", action="store_true",
+        help=(
+            "OCR the source before extracting text (pdf → md only). Use for "
+            "scanned or image-only PDFs; requires 'ocrmypdf'."
+        ),
     )
     p.add_argument(
         "-v", "--verbose", action="store_true",
@@ -297,6 +332,7 @@ def main(argv: list[str] | None = None) -> int:
     using_stdout = raw_output == STDIO
 
     css = resolved_css(args.css, args.no_style)
+    ocr = args.ocr
     verbose = args.verbose
     quiet = args.quiet
 
@@ -310,6 +346,7 @@ def main(argv: list[str] | None = None) -> int:
             using_stdin=using_stdin,
             using_stdout=using_stdout,
             css=css,
+            ocr=ocr,
             verbose=verbose,
             quiet=quiet,
         )
@@ -329,6 +366,7 @@ def main(argv: list[str] | None = None) -> int:
             to_format=args.to_format,
             recursive=args.recursive,
             css=css,
+            ocr=ocr,
             verbose=verbose,
             quiet=quiet,
         )
@@ -346,6 +384,7 @@ def _convert_single(
     using_stdin: bool,
     using_stdout: bool,
     css: list[Path],
+    ocr: bool,
     verbose: bool,
     quiet: bool,
 ) -> int:
@@ -397,7 +436,7 @@ def _convert_single(
                 src, dst, css,
                 in_ext=in_ext, out_ext=out_ext,
                 src_display=src_display, dst_display=dst_display,
-                verbose=verbose, quiet=quiet,
+                ocr=ocr, verbose=verbose, quiet=quiet,
             )
             if ok and using_stdout:
                 _emit_stdout(dst)
@@ -418,6 +457,7 @@ def _convert_batch(
     to_format: str | None,
     recursive: bool,
     css: list[Path],
+    ocr: bool,
     verbose: bool,
     quiet: bool,
 ) -> int:
@@ -452,7 +492,7 @@ def _convert_batch(
         if not convert_one(
             f, dst, css,
             in_ext=in_ext, out_ext=out_ext,
-            verbose=verbose, quiet=quiet,
+            ocr=ocr, verbose=verbose, quiet=quiet,
         ):
             ok = False
     if not found:

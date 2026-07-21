@@ -57,3 +57,6 @@ needs_pandoc = pytest.mark.skipif(not has_tool("pandoc"), reason="pandoc not ins
 needs_weasyprint = pytest.mark.skipif(
     not has_tool("weasyprint"), reason="weasyprint not installed"
 )
+needs_ocrmypdf = pytest.mark.skipif(
+    not has_tool("ocrmypdf"), reason="ocrmypdf not installed"
+)

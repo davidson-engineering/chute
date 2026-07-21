@@ -175,6 +175,27 @@ class TestMainSingleFile:
         assert rc == 0
         assert dst.read_text().startswith("# stub markdown")
 
+    def test_pdf_to_md_ocr_runs_ocrmypdf(self, tmp_path, fake_pandoc, fake_pymupdf):
+        src = tmp_path / "scan.pdf"
+        src.write_bytes(b"%PDF-1.4 fake")
+        dst = tmp_path / "scan.md"
+        rc = cli.main([str(src), "-o", str(dst), "--ocr"])
+        assert rc == 0
+        assert dst.read_text().startswith("# stub markdown")
+        ocr_calls = [c for c in fake_pandoc if c and c[0] == "ocrmypdf"]
+        assert len(ocr_calls) == 1
+        assert "--force-ocr" in ocr_calls[0]
+        assert ocr_calls[0][1] == "--force-ocr"
+
+    def test_ocr_ignored_for_non_pdf_route(self, tmp_path, fake_pandoc):
+        """--ocr is a no-op for routes other than pdf→md; no ocrmypdf call."""
+        src = tmp_path / "note.md"
+        src.write_text("# hi")
+        dst = tmp_path / "note.html"
+        rc = cli.main([str(src), "-o", str(dst), "--ocr"])
+        assert rc == 0
+        assert not any(c and c[0] == "ocrmypdf" for c in fake_pandoc)
+
     def test_env_var_overrides_pdf_engine(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CHUTE_PDF_ENGINE", "wkhtmltopdf")
         # PDF_ENGINE is captured at import time — reimport to pick it up.

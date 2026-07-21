@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from chute import cli
-from .conftest import needs_pandoc, needs_weasyprint
+from .conftest import needs_ocrmypdf, needs_pandoc, needs_weasyprint
 
 
 SAMPLE_MD = """# Hello
@@ -68,6 +68,18 @@ def test_md_to_pdf_no_style_real(sample_md, tmp_path):
     rc = cli.main([str(sample_md), "-o", str(dst), "--no-style"])
     assert rc == 0
     assert dst.read_bytes().startswith(b"%PDF")
+
+
+@needs_weasyprint
+@needs_ocrmypdf
+def test_pdf_to_md_ocr_real(sample_md, tmp_path):
+    # Render a PDF, then round-trip it back to markdown through OCR.
+    pdf = tmp_path / "rendered.pdf"
+    assert cli.main([str(sample_md), "-o", str(pdf)]) == 0
+    dst = tmp_path / "ocr.md"
+    rc = cli.main([str(pdf), "-o", str(dst), "--ocr"])
+    assert rc == 0
+    assert "Hello" in dst.read_text()
 
 
 @needs_pandoc
