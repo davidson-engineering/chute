@@ -209,6 +209,151 @@ class TestMainSingleFile:
         # PDF's only text is the OCR layer, so use_ocr=False would drop it.
         assert fake_pymupdf.calls[-1][1] == {}
 
+    def test_pdf_to_md_ocr_llama(self, tmp_path, fake_ollama):
+        """--ocr-engine llama rasterizes each page and posts it to Ollama,
+        joining the per-page transcriptions into the output markdown."""
+        src = tmp_path / "scan.pdf"
+        src.write_bytes(b"%PDF-1.4 fake")
+        dst = tmp_path / "scan.md"
+        rc = cli.main([str(src), "-o", str(dst), "--ocr", "--ocr-engine", "llama"])
+        assert rc == 0
+        assert dst.read_text() == "# page 1\n\n---\n\n# page 2\n"
+        # One POST per rendered page, to Ollama's generate endpoint.
+        assert len(fake_ollama.requests) == 2
+        url, payload = fake_ollama.requests[0]
+        assert url.endswith("/api/generate")
+        assert payload["model"] == "qwen3-vl:8b"
+        assert payload["stream"] is False
+        assert payload["images"]  # base64 page image attached
+        # Context is capped so a big-window model doesn't crawl per page.
+        assert payload["options"]["num_ctx"] == 16384
+        # Output is capped so a repetition loop can't run away.
+        assert payload["options"]["num_predict"] == 4096
+
+    def test_ocr_engine_env_overrides(self, tmp_path, fake_ollama, monkeypatch):
+        """CHUTE_OCR_MODEL / CHUTE_OLLAMA_HOST tune the llama backend."""
+        monkeypatch.setattr(cli, "OLLAMA_OCR_MODEL", "llava:13b")
+        monkeypatch.setattr(cli, "OLLAMA_HOST", "http://box:9999")
+        src = tmp_path / "scan.pdf"
+        src.write_bytes(b"%PDF-1.4 fake")
+        rc = cli.main([
+            str(src), "-o", str(tmp_path / "scan.md"), "--ocr", "--ocr-engine", "llama"
+        ])
+        assert rc == 0
+        url, payload = fake_ollama.requests[0]
+        assert url == "http://box:9999/api/generate"
+        assert payload["model"] == "llava:13b"
+
+    def test_ocr_engine_llama_ignored_without_ocr(self, tmp_path, fake_pymupdf, capsys):
+        """--ocr-engine alone (no --ocr) leaves pdf→md on the plain reader,
+        and warns that the engine flag had no effect."""
+        src = tmp_path / "p.pdf"
+        src.write_bytes(b"%PDF-1.4 fake")
+        rc = cli.main([str(src), "-o", str(tmp_path / "p.md"), "--ocr-engine", "llama"])
+        assert rc == 0
+        assert fake_pymupdf.calls, "should have used pymupdf4llm, not Ollama"
+        assert "no effect without --ocr" in capsys.readouterr().err
+
+    def test_ocr_llama_num_ctx_optout(self, tmp_path, fake_ollama, monkeypatch):
+        """CHUTE_OCR_NUM_CTX=0 leaves the context window to the server."""
+        monkeypatch.setattr(cli, "OCR_NUM_CTX", 0)
+        src = tmp_path / "scan.pdf"
+        src.write_bytes(b"%PDF-1.4 fake")
+        rc = cli.main([
+            str(src), "-o", str(tmp_path / "scan.md"), "--ocr", "--ocr-engine", "llama"
+        ])
+        assert rc == 0
+        _, payload = fake_ollama.requests[0]
+        assert "num_ctx" not in payload["options"]
+
+    def test_ocr_llama_num_predict_optout(self, tmp_path, fake_ollama, monkeypatch):
+        """CHUTE_OCR_NUM_PREDICT=0 leaves the output length unbounded."""
+        monkeypatch.setattr(cli, "OCR_NUM_PREDICT", 0)
+        src = tmp_path / "scan.pdf"
+        src.write_bytes(b"%PDF-1.4 fake")
+        rc = cli.main([
+            str(src), "-o", str(tmp_path / "scan.md"), "--ocr", "--ocr-engine", "llama"
+        ])
+        assert rc == 0
+        _, payload = fake_ollama.requests[0]
+        assert "num_predict" not in payload["options"]
+
+    def test_ocr_llama_http_error_reported(self, tmp_path, monkeypatch, capsys):
+        """An Ollama 500 is surfaced with its body and returns non-zero, rather
+        than being mislabeled as a connectivity failure."""
+        import io
+        import urllib.error
+        import urllib.request
+
+        monkeypatch.setattr(
+            "chute.cli._iter_pdf_pages", lambda path, dpi: iter([(1, 1, b"png")])
+        )
+
+        def boom(req, *args, **kwargs):
+            raise urllib.error.HTTPError(
+                req.full_url, 500, "err", {}, io.BytesIO(b'{"error":"mllama boom"}')
+            )
+
+        monkeypatch.setattr(urllib.request, "urlopen", boom)
+        src = tmp_path / "scan.pdf"
+        src.write_bytes(b"%PDF-1.4 fake")
+        rc = cli.main([
+            str(src), "-o", str(tmp_path / "scan.md"), "--ocr", "--ocr-engine", "llama"
+        ])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "HTTP 500" in err and "mllama boom" in err
+
+    def test_ocr_llama_connection_drop_reported(self, tmp_path, monkeypatch, capsys):
+        """A mid-request server drop (e.g. Ollama restart) is reported, not a
+        raw RemoteDisconnected traceback."""
+        import http.client
+        import urllib.request
+
+        monkeypatch.setattr(
+            "chute.cli._iter_pdf_pages", lambda path, dpi: iter([(1, 1, b"png")])
+        )
+
+        def drop(req, *args, **kwargs):
+            raise http.client.RemoteDisconnected(
+                "Remote end closed connection without response"
+            )
+
+        monkeypatch.setattr(urllib.request, "urlopen", drop)
+        src = tmp_path / "scan.pdf"
+        src.write_bytes(b"%PDF-1.4 fake")
+        rc = cli.main([
+            str(src), "-o", str(tmp_path / "scan.md"), "--ocr", "--ocr-engine", "llama"
+        ])
+        assert rc == 1
+        assert "connection to Ollama" in capsys.readouterr().err
+
+    def test_ocr_llama_batch_continues_after_error(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A per-file Ollama error must not abort a batch run."""
+        import urllib.error
+        import urllib.request
+
+        monkeypatch.setattr(
+            "chute.cli._iter_pdf_pages", lambda path, dpi: iter([(1, 1, b"png")])
+        )
+        (tmp_path / "a.pdf").write_bytes(b"%PDF-1.4 a")
+        (tmp_path / "b.pdf").write_bytes(b"%PDF-1.4 b")
+
+        def refuse(req, *args, **kwargs):
+            raise urllib.error.URLError("Connection refused")
+
+        monkeypatch.setattr(urllib.request, "urlopen", refuse)
+        out = tmp_path / "out"
+        rc = cli.main([
+            str(tmp_path), "-t", "md", "-o", str(out), "--ocr", "--ocr-engine", "llama"
+        ])
+        assert rc == 1  # both files failed
+        # Both files were attempted (batch didn't sys.exit on the first).
+        err = capsys.readouterr().err
+        assert err.count("could not reach Ollama") == 2
+
     def test_ocr_ignored_for_non_pdf_route(self, tmp_path, fake_pandoc):
         """--ocr is a no-op for routes other than pdf→md; no ocrmypdf call."""
         src = tmp_path / "note.md"

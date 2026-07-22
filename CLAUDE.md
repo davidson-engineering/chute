@@ -1,8 +1,8 @@
 # chute — context for Claude
 
 A small CLI that converts between document formats by dispatching to the right
-tool (`pandoc`, `pymupdf4llm`, `weasyprint`, and `ocrmypdf` for `--ocr`) for
-each (input, output) pair.
+tool (`pandoc`, `pymupdf4llm`, `weasyprint`, and — for `--ocr` — `ocrmypdf` or a
+local vision model via Ollama) for each (input, output) pair.
 
 ## Shape
 

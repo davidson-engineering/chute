@@ -15,11 +15,36 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 from chute import __version__
 
 PDF_ENGINE = os.environ.get("CHUTE_PDF_ENGINE", "weasyprint")
+
+# OCR backends for the pdf→md route (selected with --ocr-engine).
+OCR_ENGINES = ("tesseract", "llama")
+DEFAULT_OCR_ENGINE = "tesseract"
+
+# Llama (Ollama) OCR knobs. The vision model transcribes rasterized pages;
+# host/model are env-tunable so the CLI surface stays small.
+OLLAMA_HOST = os.environ.get("CHUTE_OLLAMA_HOST", "http://localhost:11434")
+OLLAMA_OCR_MODEL = os.environ.get("CHUTE_OCR_MODEL", "qwen3-vl:8b")
+OCR_RENDER_DPI = int(os.environ.get("CHUTE_OCR_DPI", "150"))
+# Cap the context window: a single rendered page's image tokens + transcription
+# fit comfortably in ~16k. Modern vision models (e.g. qwen3-vl) otherwise
+# default to a 256k window, which balloons KV-cache memory and makes per-page
+# inference crawl. Override with CHUTE_OCR_NUM_CTX (0 = leave to the server).
+OCR_NUM_CTX = int(os.environ.get("CHUTE_OCR_NUM_CTX", "16384"))
+# Per-page HTTP timeout (seconds). Vision inference is legitimately slow, so
+# this is generous; 0 disables it. Without a bound a wedged model hangs chute
+# indefinitely. Override with CHUTE_OCR_TIMEOUT.
+OCR_TIMEOUT = int(os.environ.get("CHUTE_OCR_TIMEOUT", "300"))
+# Cap generated tokens per page. Vision models frequently fall into repetition
+# loops on dense numeric tables (e.g. transaction rows), generating until they
+# fill the context — which reads as a "slow"/timed-out page. One page's text
+# comfortably fits in a few thousand tokens; this bounds worst-case time and
+# truncates runaway loops. Override with CHUTE_OCR_NUM_PREDICT (0 = unbounded).
+OCR_NUM_PREDICT = int(os.environ.get("CHUTE_OCR_NUM_PREDICT", "4096"))
 
 SUPPORTED_INPUTS = {"docx", "pdf", "md"}
 SUPPORTED_OUTPUTS = {"md", "pdf", "docx", "html"}
@@ -29,8 +54,21 @@ STYLED_OUTPUTS = {"pdf", "html"}
 STDIO = "-"
 
 
+class ConversionError(Exception):
+    """A converter failed in a way worth reporting per-file.
+
+    Unlike ``fail()`` (which exits), this is caught by ``convert_one`` so a
+    batch run reports the bad file and carries on with the rest.
+    """
+
+
 def fail(msg: str) -> None:
     sys.exit(f"chute: {msg}")
+
+
+def error(msg: str) -> None:
+    """Report a non-fatal per-file error (never gated by -q)."""
+    print(f"chute: {msg}", file=sys.stderr)
 
 
 def warn(msg: str, *, quiet: bool = False) -> None:
@@ -149,6 +187,122 @@ def pdf_to_md_ocr(src: Path, dst: Path, _css: list[Path]) -> None:
         _unlink_quietly(ocr_pdf)
 
 
+OCR_PROMPT = (
+    "You are an OCR engine. Transcribe ALL text visible in this page image "
+    "into clean GitHub-flavored Markdown. Preserve reading order, headings, "
+    "lists, and tables. Reproduce the text verbatim — do not translate, "
+    "summarize, or add commentary. Output only the Markdown for the page, with "
+    "no surrounding code fences."
+)
+
+
+def _iter_pdf_pages(path: Path, dpi: int) -> Iterator[tuple[int, int, bytes]]:
+    """Yield (page_number, total_pages, PNG bytes) one page at a time.
+
+    Rendering lazily keeps only one page's image in memory, so a large PDF
+    doesn't rasterize entirely up front.
+    """
+    import pymupdf  # bundled with pymupdf4llm
+
+    with pymupdf.open(str(path)) as doc:
+        total = doc.page_count
+        for i, page in enumerate(doc, start=1):
+            yield i, total, page.get_pixmap(dpi=dpi).tobytes("png")
+
+
+def _ollama_ocr_page(png: bytes, *, model: str, host: str) -> str:
+    """Send one page image to a local Ollama vision model; return its text."""
+    import base64
+    import http.client
+    import json
+    import urllib.error
+    import urllib.request
+
+    options: dict[str, object] = {"temperature": 0}
+    if OCR_NUM_CTX > 0:
+        options["num_ctx"] = OCR_NUM_CTX
+    if OCR_NUM_PREDICT > 0:
+        options["num_predict"] = OCR_NUM_PREDICT
+    payload = json.dumps({
+        "model": model,
+        "prompt": OCR_PROMPT,
+        "images": [base64.b64encode(png).decode("ascii")],
+        "stream": False,
+        "options": options,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"{host.rstrip('/')}/api/generate",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    timeout = OCR_TIMEOUT if OCR_TIMEOUT > 0 else None
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.load(resp)
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace").strip()
+        try:
+            detail = json.loads(detail).get("error", detail)
+        except json.JSONDecodeError:
+            pass
+        raise ConversionError(
+            f"Ollama returned HTTP {e.code} for model '{model}': {detail}"
+        )
+    except TimeoutError:
+        # socket.timeout is TimeoutError in 3.10+, and is NOT a URLError.
+        raise ConversionError(
+            f"Ollama timed out after {OCR_TIMEOUT}s on model '{model}'. Raise "
+            f"CHUTE_OCR_TIMEOUT, lower CHUTE_OCR_DPI, or try a smaller model."
+        )
+    except urllib.error.URLError as e:
+        reason = e.reason
+        if isinstance(reason, TimeoutError):
+            raise ConversionError(
+                f"Ollama timed out after {OCR_TIMEOUT}s on model '{model}'. "
+                f"Raise CHUTE_OCR_TIMEOUT, lower CHUTE_OCR_DPI, or try a "
+                f"smaller model."
+            )
+        raise ConversionError(
+            f"could not reach Ollama at {host} ({reason}). Is 'ollama serve' "
+            f"running and the '{model}' model pulled?"
+        )
+    except (ConnectionError, http.client.HTTPException) as e:
+        # Server went away mid-request (e.g. restarted) — not a URLError.
+        raise ConversionError(
+            f"connection to Ollama at {host} dropped ({e.__class__.__name__}). "
+            f"Did the server restart or the model crash? Ensure 'ollama serve' "
+            f"is up, then retry."
+        )
+    return body.get("response", "").strip()
+
+
+def pdf_to_md_llama(
+    src: Path,
+    dst: Path,
+    _css: list[Path],
+    *,
+    progress: Callable[[int, int], None] | None = None,
+) -> None:
+    """OCR a PDF with a local Llama vision model via Ollama.
+
+    Each page is rasterized to PNG and transcribed to Markdown by the vision
+    model; pages are joined with a horizontal rule. Unlike the tesseract route
+    this reads figures and complex layouts, at the cost of a running Ollama
+    server and per-page inference time.
+
+    `progress(page, total)` is invoked before each page so the caller (which
+    owns user-facing output) can report advancement on long multi-page runs.
+    """
+    chunks: list[str] = []
+    for page_no, total, png in _iter_pdf_pages(src, OCR_RENDER_DPI):
+        if progress is not None:
+            progress(page_no, total)
+        text = _ollama_ocr_page(png, model=OLLAMA_OCR_MODEL, host=OLLAMA_HOST)
+        if text:
+            chunks.append(text)
+    dst.write_text("\n\n---\n\n".join(chunks) + "\n")
+
+
 def md_to_pdf(src: Path, dst: Path, css: list[Path]) -> None:
     require_tool(PDF_ENGINE)
     _pandoc([
@@ -185,9 +339,15 @@ ROUTES: dict[tuple[str, str], Converter] = {
 }
 
 
-def route_tag(in_ext: str, out_ext: str, *, ocr: bool = False) -> str:
+def route_tag(
+    in_ext: str, out_ext: str, *, ocr: bool = False, ocr_engine: str = DEFAULT_OCR_ENGINE
+) -> str:
     if (in_ext, out_ext) == ("pdf", "md"):
-        return "ocrmypdf+pymupdf4llm" if ocr else "pymupdf4llm"
+        if not ocr:
+            return "pymupdf4llm"
+        if ocr_engine == "llama":
+            return f"ollama:{OLLAMA_OCR_MODEL}"
+        return "ocrmypdf+pymupdf4llm"
     if out_ext == "pdf":
         return f"pandoc+{PDF_ENGINE}"
     return "pandoc"
@@ -207,6 +367,7 @@ def convert_one(
     src_display: str | None = None,
     dst_display: str | None = None,
     ocr: bool = False,
+    ocr_engine: str = DEFAULT_OCR_ENGINE,
     verbose: bool = False,
     quiet: bool = False,
 ) -> bool:
@@ -223,15 +384,30 @@ def convert_one(
         return False
     # --ocr only reshapes the pdf→md route; it is a no-op for anything else.
     ocr = ocr and (in_ext, out_ext) == ("pdf", "md")
+    use_llama = ocr and ocr_engine == "llama"
     if ocr:
-        route = pdf_to_md_ocr
+        route = pdf_to_md_llama if use_llama else pdf_to_md_ocr
     dst.parent.mkdir(parents=True, exist_ok=True)
     effective_css = css if out_ext in STYLED_OUTPUTS else []
     info(
-        f"[{route_tag(in_ext, out_ext, ocr=ocr)}] {src_label} → {dst_label}",
+        f"[{route_tag(in_ext, out_ext, ocr=ocr, ocr_engine=ocr_engine)}] "
+        f"{src_label} → {dst_label}",
         verbose=verbose,
     )
-    route(src, dst, effective_css)
+    try:
+        if use_llama:
+            pdf_to_md_llama(
+                src, dst, effective_css,
+                progress=lambda i, n: info(
+                    f"  page {i}/{n} → {route_tag(in_ext, out_ext, ocr=ocr, ocr_engine=ocr_engine)}",
+                    verbose=verbose,
+                ),
+            )
+        else:
+            route(src, dst, effective_css)
+    except ConversionError as e:
+        error(f"{src_label}: {e}")
+        return False
     return True
 
 
@@ -283,7 +459,16 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--ocr", action="store_true",
         help=(
             "OCR the source before extracting text (pdf → md only). Use for "
-            "scanned or image-only PDFs; requires 'ocrmypdf'."
+            "scanned or image-only PDFs."
+        ),
+    )
+    p.add_argument(
+        "--ocr-engine", choices=OCR_ENGINES, default=DEFAULT_OCR_ENGINE,
+        help=(
+            "OCR backend for --ocr: 'tesseract' (via ocrmypdf, the default) or "
+            "'llama' (a local vision model via Ollama, default qwen3-vl:8b). The "
+            "llama engine reads figures and complex layouts but needs a running "
+            "Ollama server; tune with CHUTE_OCR_MODEL / CHUTE_OLLAMA_HOST."
         ),
     )
     p.add_argument(
@@ -353,8 +538,16 @@ def main(argv: list[str] | None = None) -> int:
 
     css = resolved_css(args.css, args.no_style)
     ocr = args.ocr
+    ocr_engine = args.ocr_engine
     verbose = args.verbose
     quiet = args.quiet
+
+    if ocr_engine != DEFAULT_OCR_ENGINE and not ocr:
+        warn(
+            f"--ocr-engine {ocr_engine} has no effect without --ocr; "
+            "extracting text without OCR",
+            quiet=quiet,
+        )
 
     # ---- single-file path (real file OR stdin) ----------------------------
     if using_stdin or Path(raw_input).is_file():
@@ -367,6 +560,7 @@ def main(argv: list[str] | None = None) -> int:
             using_stdout=using_stdout,
             css=css,
             ocr=ocr,
+            ocr_engine=ocr_engine,
             verbose=verbose,
             quiet=quiet,
         )
@@ -387,6 +581,7 @@ def main(argv: list[str] | None = None) -> int:
             recursive=args.recursive,
             css=css,
             ocr=ocr,
+            ocr_engine=ocr_engine,
             verbose=verbose,
             quiet=quiet,
         )
@@ -405,6 +600,7 @@ def _convert_single(
     using_stdout: bool,
     css: list[Path],
     ocr: bool,
+    ocr_engine: str,
     verbose: bool,
     quiet: bool,
 ) -> int:
@@ -456,7 +652,7 @@ def _convert_single(
                 src, dst, css,
                 in_ext=in_ext, out_ext=out_ext,
                 src_display=src_display, dst_display=dst_display,
-                ocr=ocr, verbose=verbose, quiet=quiet,
+                ocr=ocr, ocr_engine=ocr_engine, verbose=verbose, quiet=quiet,
             )
             if ok and using_stdout:
                 _emit_stdout(dst)
@@ -478,6 +674,7 @@ def _convert_batch(
     recursive: bool,
     css: list[Path],
     ocr: bool,
+    ocr_engine: str,
     verbose: bool,
     quiet: bool,
 ) -> int:
@@ -512,7 +709,7 @@ def _convert_batch(
         if not convert_one(
             f, dst, css,
             in_ext=in_ext, out_ext=out_ext,
-            ocr=ocr, verbose=verbose, quiet=quiet,
+            ocr=ocr, ocr_engine=ocr_engine, verbose=verbose, quiet=quiet,
         ):
             ok = False
     if not found:

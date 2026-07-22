@@ -49,6 +49,44 @@ def fake_pymupdf(monkeypatch):
 
 
 @pytest.fixture
+def fake_ollama(monkeypatch):
+    """Stub the Llama/Ollama OCR path so pdf→md --ocr-engine llama needs no PDF,
+    no pymupdf render, and no Ollama server.
+
+    Rasterizing is faked to two pages; each POST to Ollama is captured on
+    `mod.requests` and answered with a per-page markdown stub.
+    """
+    import io
+    import json
+    import types
+    import urllib.request
+
+    mod = types.SimpleNamespace(requests=[])
+
+    monkeypatch.setattr(
+        "chute.cli._iter_pdf_pages",
+        lambda path, dpi: iter([(1, 2, b"png-1"), (2, 2, b"png-2")]),
+    )
+
+    class FakeResponse(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.close()
+
+    def fake_urlopen(req, *args, **kwargs):
+        payload = json.loads(req.data.decode("utf-8"))
+        mod.requests.append((req.full_url, payload))
+        page = len(mod.requests)
+        body = json.dumps({"response": f"# page {page}\n"}).encode("utf-8")
+        return FakeResponse(body)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    return mod
+
+
+@pytest.fixture
 def sample_files(tmp_path: Path) -> Path:
     """Tree of dummy inputs — content doesn't matter when pandoc is faked."""
     (tmp_path / "a.docx").write_bytes(b"fake docx")
