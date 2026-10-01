@@ -28,16 +28,21 @@ def fake_pandoc(monkeypatch):
 
 @pytest.fixture
 def fake_pymupdf(monkeypatch):
-    """Stub pymupdf4llm so pdf→md doesn't require a real PDF.
+    """Stub pymupdf4llm so pdf→md doesn't require a real PDF or Tesseract.
 
-    Models the modern layout parser (`_use_layout=True`) and records each
-    to_markdown call's kwargs on `mod.calls` so tests can assert chute
-    suppresses the implicit OCR pass.
+    Records each to_markdown call's kwargs on `mod.calls` so tests can assert
+    which OCR mode chute asks for; `mod.ocr.OCRMode` stands in for the real
+    enum (same member names and values).
     """
+    import enum
+    import sys
     import types
 
+    import pymupdf
+
     mod = types.ModuleType("pymupdf4llm")
-    mod._use_layout = True
+    mod.ocr = types.ModuleType("pymupdf4llm.ocr")
+    mod.ocr.OCRMode = enum.IntEnum("OCRMode", {"NEVER": 0, "FORCE_DROP_OLD": 3})
     mod.calls = []
 
     def to_markdown(path, **kwargs):
@@ -45,7 +50,9 @@ def fake_pymupdf(monkeypatch):
         return f"# stub markdown for {path}\n"
 
     mod.to_markdown = to_markdown
-    monkeypatch.setitem(__import__("sys").modules, "pymupdf4llm", mod)
+    monkeypatch.setitem(sys.modules, "pymupdf4llm", mod)
+    monkeypatch.setitem(sys.modules, "pymupdf4llm.ocr", mod.ocr)
+    monkeypatch.setattr(pymupdf, "get_tessdata", lambda tessdata=None: "/fake/tessdata")
     # The test PDFs are fake bytes real pymupdf can't open; hand the stub the
     # path in place of an opened document.
     monkeypatch.setattr(
@@ -117,6 +124,6 @@ needs_pandoc = pytest.mark.skipif(not has_tool("pandoc"), reason="pandoc not ins
 needs_weasyprint = pytest.mark.skipif(
     not has_tool("weasyprint"), reason="weasyprint not installed"
 )
-needs_ocrmypdf = pytest.mark.skipif(
-    not has_tool("ocrmypdf"), reason="ocrmypdf not installed"
+needs_tesseract = pytest.mark.skipif(
+    not has_tool("tesseract"), reason="tesseract not installed"
 )

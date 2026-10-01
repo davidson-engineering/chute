@@ -80,7 +80,7 @@ chute <input|-> [-o <output|->] [-f <format>] [-t <format>]
 - For `pdf → md` only; a no-op for every other route
 - Use it for scanned or image-only PDFs whose text `pymupdf4llm` can't read
 - `--ocr-engine` picks the backend:
-  - `tesseract` (default): lays down a Tesseract text layer with `ocrmypdf` before extraction. Requires `ocrmypdf` on `PATH` (`brew install ocrmypdf` / `sudo apt install ocrmypdf`)
+  - `tesseract` (default): `pymupdf4llm` OCRs each page with Tesseract in a single pass, replacing any earlier OCR layer. Requires Tesseract (`brew install tesseract` / `sudo apt install tesseract-ocr`), or `TESSDATA_PREFIX` pointing at its language data
   - `ollama`: rasterizes each page and has a local vision model transcribe it via [Ollama](https://ollama.com). Reads figures and complex layouts, at the cost of a running Ollama server and per-page inference. Requires `ollama serve` and a pulled model (`ollama pull qwen3-vl:8b-instruct`). If a page runs out of tokens, chute keeps what it got, names the page, and exits 1. Tune with the env vars below.
 
     | Env var | Default | Purpose |

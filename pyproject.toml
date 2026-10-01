@@ -26,7 +26,7 @@ classifiers = [
     "Topic :: Text Processing :: Markup :: HTML",
 ]
 dependencies = [
-    "pymupdf4llm>=0.0.17",
+    "pymupdf4llm>=1.28",
 ]
 
 [project.urls]

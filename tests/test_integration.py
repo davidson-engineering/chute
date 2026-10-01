@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from chute import cli
-from .conftest import needs_ocrmypdf, needs_pandoc, needs_weasyprint
+from .conftest import needs_pandoc, needs_tesseract, needs_weasyprint
 
 
 SAMPLE_MD = """# Hello
@@ -72,34 +72,49 @@ def test_md_to_pdf_no_style_real(sample_md, tmp_path):
     assert dst.read_bytes().startswith(b"%PDF")
 
 
+@pytest.fixture
+def scanned_pdf(sample_md, tmp_path: Path) -> Path:
+    """sample_md rendered to PDF, then flattened to page images: no text layer,
+    like a scan."""
+    import pymupdf
+
+    rendered = tmp_path / "rendered.pdf"
+    assert cli.main([str(sample_md), "-o", str(rendered)]) == 0
+    scan = pymupdf.open()
+    for page in pymupdf.open(rendered):
+        image = scan.new_page(width=page.rect.width, height=page.rect.height)
+        image.insert_image(image.rect, pixmap=page.get_pixmap(dpi=200))
+    path = tmp_path / "scan.pdf"
+    scan.save(path)
+    assert not "".join(p.get_text() for p in pymupdf.open(path)).strip()
+    return path
+
+
 @needs_weasyprint
-@needs_ocrmypdf
-def test_pdf_to_md_ocr_real(sample_md, tmp_path):
-    # Render a PDF, then round-trip it back to markdown through OCR.
-    pdf = tmp_path / "rendered.pdf"
-    assert cli.main([str(sample_md), "-o", str(pdf)]) == 0
+@needs_tesseract
+def test_pdf_to_md_ocr_real(scanned_pdf, tmp_path):
     dst = tmp_path / "ocr.md"
-    rc = cli.main([str(pdf), "-o", str(dst), "--ocr"])
+    rc = cli.main([str(scanned_pdf), "-o", str(dst), "--ocr"])
     assert rc == 0
-    assert "Hello" in dst.read_text()
+    # Body text with its word spacing intact. (The lone "# Hello" title is
+    # not asserted: MuPDF's Tesseract misses it at the default 150 dpi.)
+    assert "This is chute integration test content" in dst.read_text()
 
 
 @needs_weasyprint
-@needs_ocrmypdf
-def test_pdf_to_md_ocr_stdout_is_only_markdown(sample_md, tmp_path):
-    # pymupdf4llm's progress chatter must go to stderr, not into `-o -` output.
+@needs_tesseract
+def test_pdf_to_md_ocr_stdout_is_only_markdown(scanned_pdf):
+    # pymupdf4llm's OCR chatter must go to stderr, not into `-o -` output.
     # Run a real process: in-process, pymupdf binds whatever sys.stdout pytest
     # had installed when it was first imported.
-    pdf = tmp_path / "rendered.pdf"
-    assert cli.main([str(sample_md), "-o", str(pdf)]) == 0
     proc = subprocess.run(
-        [sys.executable, "-m", "chute.cli", str(pdf), "-t", "md", "--ocr", "-o", "-"],
+        [sys.executable, "-m", "chute.cli", str(scanned_pdf), "-t", "md", "--ocr", "-o", "-"],
         capture_output=True, text=True,
     )
     assert proc.returncode == 0, proc.stderr
-    assert "Hello" in proc.stdout
+    assert "integration test content" in proc.stdout
     assert "Document parser messages" not in proc.stdout
-    assert "OCR on page" not in proc.stdout
+    assert "Using Tesseract" not in proc.stdout
 
 
 @needs_pandoc

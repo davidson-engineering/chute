@@ -184,32 +184,42 @@ class TestMainSingleFile:
         src.write_bytes(b"%PDF-1.4 fake")
         rc = cli.main([str(src), "-o", str(tmp_path / "p.md")])
         assert rc == 0
-        assert fake_pymupdf.calls[-1][1] == {"use_ocr": False}
+        assert fake_pymupdf.calls[-1][1] == {
+            "use_ocr": fake_pymupdf.ocr.OCRMode.NEVER
+        }
 
-    def test_pdf_to_md_legacy_parser_passes_no_kwargs(self, tmp_path, fake_pymupdf):
-        """Legacy-parser builds have no use_ocr kwarg; don't pass it (it would
-        print a warning to stdout)."""
-        fake_pymupdf._use_layout = False
-        src = tmp_path / "p.pdf"
-        src.write_bytes(b"%PDF-1.4 fake")
-        rc = cli.main([str(src), "-o", str(tmp_path / "p.md")])
-        assert rc == 0
-        assert fake_pymupdf.calls[-1][1] == {}
-
-    def test_pdf_to_md_ocr_runs_ocrmypdf(self, tmp_path, fake_pandoc, fake_pymupdf):
+    def test_pdf_to_md_ocr_is_one_pymupdf4llm_pass(
+        self, tmp_path, fake_pandoc, fake_pymupdf
+    ):
+        """--ocr OCRs exactly once, inside pymupdf4llm, redoing any earlier OCR
+        layer. No ocrmypdf pre-pass (that made it two passes, and pymupdf4llm
+        reads an invisible OCR layer back without word spacing)."""
         src = tmp_path / "scan.pdf"
         src.write_bytes(b"%PDF-1.4 fake")
         dst = tmp_path / "scan.md"
         rc = cli.main([str(src), "-o", str(dst), "--ocr"])
         assert rc == 0
         assert dst.read_text().startswith("# stub markdown")
-        ocr_calls = [c for c in fake_pandoc if c and c[0] == "ocrmypdf"]
-        assert len(ocr_calls) == 1
-        assert "--force-ocr" in ocr_calls[0]
-        assert ocr_calls[0][1] == "--force-ocr"
-        # The --ocr path must NOT suppress pymupdf4llm's reader: the ocrmypdf'd
-        # PDF's only text is the OCR layer, so use_ocr=False would drop it.
-        assert fake_pymupdf.calls[-1][1] == {}
+        assert fake_pandoc == []  # no external tool run at all
+        assert fake_pymupdf.calls == [
+            (str(src), {"use_ocr": fake_pymupdf.ocr.OCRMode.FORCE_DROP_OLD})
+        ]
+
+    def test_ocr_without_tesseract_fails_cleanly(
+        self, tmp_path, fake_pymupdf, monkeypatch
+    ):
+        import pymupdf
+
+        def missing(tessdata=None):
+            raise RuntimeError("No tessdata specified and Tesseract is not installed")
+
+        monkeypatch.setattr(pymupdf, "get_tessdata", missing)
+        src = tmp_path / "scan.pdf"
+        src.write_bytes(b"%PDF-1.4 fake")
+        with pytest.raises(SystemExit) as exc:
+            cli.main([str(src), "-o", str(tmp_path / "scan.md"), "--ocr"])
+        assert "--ocr needs Tesseract" in exc.value.code
+        assert not fake_pymupdf.calls
 
     def test_pdf_to_md_ocr_ollama(self, tmp_path, fake_ollama):
         """--ocr-engine ollama rasterizes each page and posts it to Ollama,
@@ -500,13 +510,13 @@ class TestMainSingleFile:
         )
 
     def test_ocr_ignored_for_non_pdf_route(self, tmp_path, fake_pandoc):
-        """--ocr is a no-op for routes other than pdf→md; no ocrmypdf call."""
+        """--ocr is a no-op for routes other than pdf→md."""
         src = tmp_path / "note.md"
         src.write_text("# hi")
         dst = tmp_path / "note.html"
         rc = cli.main([str(src), "-o", str(dst), "--ocr"])
         assert rc == 0
-        assert not any(c and c[0] == "ocrmypdf" for c in fake_pandoc)
+        assert [c[0] for c in fake_pandoc] == ["pandoc"]
 
     def test_env_var_overrides_pdf_engine(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CHUTE_PDF_ENGINE", "wkhtmltopdf")

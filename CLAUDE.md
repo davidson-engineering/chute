@@ -1,8 +1,8 @@
 # chute — context for Claude
 
 A small CLI that converts between document formats by dispatching to the right
-tool (`pandoc`, `pymupdf4llm`, `weasyprint`, and, for `--ocr`, `ocrmypdf` or a
-local vision model via Ollama) for each (input, output) pair.
+tool (`pandoc`, `pymupdf4llm`, `weasyprint`, and, for `--ocr`, Tesseract via
+`pymupdf4llm` or a local vision model via Ollama) for each (input, output) pair.
 
 ## Shape
 
@@ -15,6 +15,10 @@ local vision model via Ollama) for each (input, output) pair.
   `convert_one` reports it and a batch carries on. Run external tools through
   `_run()` and open PDFs through `_open_pdf()` so their failures arrive that
   way instead of as a traceback that aborts the batch.
+- OCR is a single pass. The tesseract route lets `pymupdf4llm` OCR the PDF
+  itself; don't reintroduce an ocrmypdf pre-pass. pymupdf4llm reads an
+  invisible OCR text layer back without word spacing, and some versions
+  re-OCR it anyway.
 - Styling: bundled `src/chute/styles/default.css` with embedded woff2 fonts
   (IBM Plex Sans, JetBrains Mono). The fonts are load-bearing for reproducible
   PDF/HTML output, so don't strip them from packaging.
