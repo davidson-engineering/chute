@@ -8,6 +8,7 @@ Outputs: md, pdf, docx, html
 from __future__ import annotations
 
 import argparse
+import functools
 import importlib.resources
 import os
 import shutil
@@ -15,36 +16,33 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import TYPE_CHECKING, Callable, Iterator, NoReturn
 
 from chute import __version__
+
+if TYPE_CHECKING:
+    import pymupdf
+
+# pymupdf (and pymupdf4llm through it) prints progress like "=== Document
+# parser messages ===" to stdout, which would corrupt `-o -` output. Point it
+# at stderr; read when pymupdf is first imported, so set it before that.
+os.environ.setdefault("PYMUPDF_MESSAGE", "fd:2")
 
 PDF_ENGINE = os.environ.get("CHUTE_PDF_ENGINE", "weasyprint")
 
 # OCR backends for the pdf→md route (selected with --ocr-engine).
-OCR_ENGINES = ("tesseract", "llama")
+OCR_ENGINES = ("tesseract", "ollama")
 DEFAULT_OCR_ENGINE = "tesseract"
 
-# Llama (Ollama) OCR knobs. The vision model transcribes rasterized pages;
-# host/model are env-tunable so the CLI surface stays small.
+# Ollama OCR settings. The vision model transcribes rasterized pages;
+# host/model are env-tunable so the CLI surface stays small. The numeric
+# settings (CHUTE_OCR_DPI etc.) are read in pdf_to_md_ollama, on use.
 OLLAMA_HOST = os.environ.get("CHUTE_OLLAMA_HOST", "http://localhost:11434")
-OLLAMA_OCR_MODEL = os.environ.get("CHUTE_OCR_MODEL", "qwen3-vl:8b")
-OCR_RENDER_DPI = int(os.environ.get("CHUTE_OCR_DPI", "150"))
-# Cap the context window: a single rendered page's image tokens + transcription
-# fit comfortably in ~16k. Modern vision models (e.g. qwen3-vl) otherwise
-# default to a 256k window, which balloons KV-cache memory and makes per-page
-# inference crawl. Override with CHUTE_OCR_NUM_CTX (0 = leave to the server).
-OCR_NUM_CTX = int(os.environ.get("CHUTE_OCR_NUM_CTX", "16384"))
-# Per-page HTTP timeout (seconds). Vision inference is legitimately slow, so
-# this is generous; 0 disables it. Without a bound a wedged model hangs chute
-# indefinitely. Override with CHUTE_OCR_TIMEOUT.
-OCR_TIMEOUT = int(os.environ.get("CHUTE_OCR_TIMEOUT", "300"))
-# Cap generated tokens per page. Vision models frequently fall into repetition
-# loops on dense numeric tables (e.g. transaction rows), generating until they
-# fill the context — which reads as a "slow"/timed-out page. One page's text
-# comfortably fits in a few thousand tokens; this bounds worst-case time and
-# truncates runaway loops. Override with CHUTE_OCR_NUM_PREDICT (0 = unbounded).
-OCR_NUM_PREDICT = int(os.environ.get("CHUTE_OCR_NUM_PREDICT", "4096"))
+# Must be a non-thinking model. Ollama's plain `qwen3-vl:8b` tag is the
+# Thinking checkpoint: it reasons before answering whatever `think` says, and
+# on a dense page it spends the whole token budget doing so and returns no text.
+DEFAULT_OLLAMA_OCR_MODEL = "qwen3-vl:8b-instruct"
+OLLAMA_OCR_MODEL = os.environ.get("CHUTE_OCR_MODEL", DEFAULT_OLLAMA_OCR_MODEL)
 
 SUPPORTED_INPUTS = {"docx", "pdf", "md"}
 SUPPORTED_OUTPUTS = {"md", "pdf", "docx", "html"}
@@ -62,13 +60,8 @@ class ConversionError(Exception):
     """
 
 
-def fail(msg: str) -> None:
+def fail(msg: str) -> NoReturn:
     sys.exit(f"chute: {msg}")
-
-
-def error(msg: str) -> None:
-    """Report a non-fatal per-file error (never gated by -q)."""
-    print(f"chute: {msg}", file=sys.stderr)
 
 
 def warn(msg: str, *, quiet: bool = False) -> None:
@@ -101,12 +94,43 @@ def resolved_css(user_css: list[Path] | None, no_style: bool) -> list[Path]:
     return [default_stylesheet()]
 
 
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    """Read a whole-number setting from the environment.
+
+    Parsed when a route needs it rather than at import, so a malformed value
+    only breaks the route that reads it (not `chute --version` or md → pdf).
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        value = None
+    if value is None or value < minimum:
+        fail(f"{name} must be a whole number >= {minimum}, got '{raw}'")
+    return value
+
+
 Converter = Callable[[Path, Path, list[Path]], None]
+
+
+def _run(cmd: list[str]) -> None:
+    """Run an external tool; a non-zero exit fails just the current file.
+
+    The tool has already printed its own diagnostics to stderr by then.
+    """
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        raise ConversionError(
+            f"{cmd[0]} failed (exit status {e.returncode})"
+        ) from None
 
 
 def _pandoc(args: list[str]) -> None:
     require_tool("pandoc")
-    subprocess.run(["pandoc", *args], check=True)
+    _run(["pandoc", *args])
 
 
 def _pandoc_css_args(css_files: list[Path]) -> list[str]:
@@ -141,6 +165,20 @@ def docx_to_html(src: Path, dst: Path, css: list[Path]) -> None:
     ])
 
 
+def _open_pdf(path: Path) -> pymupdf.Document:
+    """Open a PDF, turning unreadable or locked input into a per-file error."""
+    import pymupdf  # bundled with pymupdf4llm
+
+    try:
+        doc = pymupdf.open(str(path))
+    except pymupdf.FileDataError:  # includes EmptyFileError
+        raise ConversionError("not a readable PDF") from None
+    if doc.needs_pass:
+        doc.close()
+        raise ConversionError("PDF is password-protected")
+    return doc
+
+
 def _pdf_markdown(path: Path, *, allow_ocr: bool) -> str:
     """Extract markdown from a PDF via pymupdf4llm.
 
@@ -162,7 +200,8 @@ def _pdf_markdown(path: Path, *, allow_ocr: bool) -> str:
     kwargs = {}
     if not allow_ocr and getattr(pymupdf4llm, "_use_layout", False):
         kwargs["use_ocr"] = False
-    return pymupdf4llm.to_markdown(str(path), **kwargs)
+    with _open_pdf(path) as doc:
+        return pymupdf4llm.to_markdown(doc, **kwargs)
 
 
 def pdf_to_md(src: Path, dst: Path, _css: list[Path]) -> None:
@@ -178,10 +217,7 @@ def pdf_to_md_ocr(src: Path, dst: Path, _css: list[Path]) -> None:
     require_tool("ocrmypdf")
     ocr_pdf = _stdout_target("pdf")  # scratch PDF with a fresh text layer
     try:
-        subprocess.run(
-            ["ocrmypdf", "--force-ocr", str(src), str(ocr_pdf)],
-            check=True,
-        )
+        _run(["ocrmypdf", "--force-ocr", str(src), str(ocr_pdf)])
         dst.write_text(_pdf_markdown(ocr_pdf, allow_ocr=True))
     finally:
         _unlink_quietly(ocr_pdf)
@@ -190,7 +226,7 @@ def pdf_to_md_ocr(src: Path, dst: Path, _css: list[Path]) -> None:
 OCR_PROMPT = (
     "You are an OCR engine. Transcribe ALL text visible in this page image "
     "into clean GitHub-flavored Markdown. Preserve reading order, headings, "
-    "lists, and tables. Reproduce the text verbatim — do not translate, "
+    "lists, and tables. Reproduce the text verbatim. Do not translate, "
     "summarize, or add commentary. Output only the Markdown for the page, with "
     "no surrounding code fences."
 )
@@ -202,105 +238,181 @@ def _iter_pdf_pages(path: Path, dpi: int) -> Iterator[tuple[int, int, bytes]]:
     Rendering lazily keeps only one page's image in memory, so a large PDF
     doesn't rasterize entirely up front.
     """
-    import pymupdf  # bundled with pymupdf4llm
-
-    with pymupdf.open(str(path)) as doc:
+    with _open_pdf(path) as doc:
         total = doc.page_count
         for i, page in enumerate(doc, start=1):
             yield i, total, page.get_pixmap(dpi=dpi).tobytes("png")
 
 
-def _ollama_ocr_page(png: bytes, *, model: str, host: str) -> str:
-    """Send one page image to a local Ollama vision model; return its text."""
+def _unwrap_fence(text: str) -> str:
+    """Strip a code fence wrapped around a whole page of Markdown.
+
+    Vision models often fence their reply (```markdown ... ```) despite the
+    prompt, which would render the page as one literal code block.
+    """
+    lines = text.splitlines()
+    if (
+        len(lines) >= 2
+        and lines[0].strip().lower() in ("```", "```markdown", "```md")
+        and lines[-1].strip() == "```"
+        and not any(line.lstrip().startswith("```") for line in lines[1:-1])
+    ):
+        return "\n".join(lines[1:-1]).strip()
+    return text
+
+
+def _ollama_ocr_page(
+    png: bytes,
+    *,
+    model: str,
+    host: str,
+    options: dict[str, object],
+    timeout: int,
+) -> tuple[str, bool]:
+    """Send one page image to a local Ollama vision model.
+
+    Returns the page's text and whether the token limit cut it off.
+    """
     import base64
     import http.client
     import json
     import urllib.error
     import urllib.request
 
-    options: dict[str, object] = {"temperature": 0}
-    if OCR_NUM_CTX > 0:
-        options["num_ctx"] = OCR_NUM_CTX
-    if OCR_NUM_PREDICT > 0:
-        options["num_predict"] = OCR_NUM_PREDICT
     payload = json.dumps({
         "model": model,
         "prompt": OCR_PROMPT,
         "images": [base64.b64encode(png).decode("ascii")],
         "stream": False,
+        # Transcription needs no reasoning. Models with switchable thinking
+        # honor this; thinking-only checkpoints ignore it (see OLLAMA_OCR_MODEL).
+        "think": False,
         "options": options,
     }).encode("utf-8")
     req = urllib.request.Request(
-        f"{host.rstrip('/')}/api/generate",
+        f"{host}/api/generate",
         data=payload,
         headers={"Content-Type": "application/json"},
     )
-    timeout = OCR_TIMEOUT if OCR_TIMEOUT > 0 else None
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout or None) as resp:
             body = json.load(resp)
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace").strip()
         try:
-            detail = json.loads(detail).get("error", detail)
+            parsed = json.loads(detail)
         except json.JSONDecodeError:
-            pass
+            parsed = None
+        if isinstance(parsed, dict) and "error" in parsed:
+            detail = parsed["error"]
         raise ConversionError(
             f"Ollama returned HTTP {e.code} for model '{model}': {detail}"
         )
-    except TimeoutError:
-        # socket.timeout is TimeoutError in 3.10+, and is NOT a URLError.
-        raise ConversionError(
-            f"Ollama timed out after {OCR_TIMEOUT}s on model '{model}'. Raise "
-            f"CHUTE_OCR_TIMEOUT, lower CHUTE_OCR_DPI, or try a smaller model."
-        )
-    except urllib.error.URLError as e:
-        reason = e.reason
-        if isinstance(reason, TimeoutError):
+    except (TimeoutError, urllib.error.URLError) as e:
+        # A read timeout surfaces as a bare TimeoutError (socket.timeout); a
+        # connect timeout as a URLError wrapping one.
+        if isinstance(e, TimeoutError) or isinstance(e.reason, TimeoutError):
             raise ConversionError(
-                f"Ollama timed out after {OCR_TIMEOUT}s on model '{model}'. "
-                f"Raise CHUTE_OCR_TIMEOUT, lower CHUTE_OCR_DPI, or try a "
-                f"smaller model."
+                f"Ollama timed out after {timeout}s on model '{model}'. Raise "
+                f"CHUTE_OCR_TIMEOUT, lower CHUTE_OCR_DPI, or try a smaller model."
             )
         raise ConversionError(
-            f"could not reach Ollama at {host} ({reason}). Is 'ollama serve' "
+            f"could not reach Ollama at {host} ({e.reason}). Is 'ollama serve' "
             f"running and the '{model}' model pulled?"
         )
     except (ConnectionError, http.client.HTTPException) as e:
-        # Server went away mid-request (e.g. restarted) — not a URLError.
+        # Server went away mid-request (e.g. restarted); not a URLError.
         raise ConversionError(
             f"connection to Ollama at {host} dropped ({e.__class__.__name__}). "
             f"Did the server restart or the model crash? Ensure 'ollama serve' "
             f"is up, then retry."
         )
-    return body.get("response", "").strip()
+    except ValueError:  # JSONDecodeError: something answered, but not Ollama
+        body = None
+    if not isinstance(body, dict) or not isinstance(body.get("response"), str):
+        raise ConversionError(
+            f"{host} did not answer like an Ollama server; check CHUTE_OLLAMA_HOST"
+        )
+
+    text = body["response"].strip()
+    cut_off = body.get("done_reason") == "length"
+    if cut_off and not text and body.get("thinking"):
+        # Every page will go the same way, so stop now rather than after
+        # minutes of inference per page.
+        raise ConversionError(
+            f"'{model}' spent its whole token budget thinking and returned no "
+            f"text. Use a non-thinking model, e.g. "
+            f"CHUTE_OCR_MODEL={DEFAULT_OLLAMA_OCR_MODEL}."
+        )
+    return _unwrap_fence(text), cut_off
 
 
-def pdf_to_md_llama(
+def pdf_to_md_ollama(
     src: Path,
     dst: Path,
     _css: list[Path],
     *,
     progress: Callable[[int, int], None] | None = None,
 ) -> None:
-    """OCR a PDF with a local Llama vision model via Ollama.
+    """OCR a PDF with a local vision model via Ollama.
 
     Each page is rasterized to PNG and transcribed to Markdown by the vision
     model; pages are joined with a horizontal rule. Unlike the tesseract route
     this reads figures and complex layouts, at the cost of a running Ollama
     server and per-page inference time.
 
+    A page the token limit cuts off is kept as far as it got, and reported
+    (as a ConversionError) only after the whole document is written, so one
+    dense page doesn't throw away the rest.
+
     `progress(page, total)` is invoked before each page so the caller (which
     owns user-facing output) can report advancement on long multi-page runs.
     """
+    dpi = _env_int("CHUTE_OCR_DPI", 150, minimum=1)
+    # Per-page HTTP timeout (seconds). Vision inference is legitimately slow,
+    # so this is generous; 0 disables it. Without a bound a wedged model hangs
+    # chute indefinitely.
+    timeout = _env_int("CHUTE_OCR_TIMEOUT", 300)
+    # Cap the context window: a single rendered page's image tokens plus its
+    # transcription fit comfortably in ~16k. Modern vision models (e.g.
+    # qwen3-vl) otherwise default to a 256k window, which balloons KV-cache
+    # memory and makes per-page inference crawl. 0 = leave to the server.
+    num_ctx = _env_int("CHUTE_OCR_NUM_CTX", 16384)
+    # Cap generated tokens per page. A dense 70-row statement page takes about
+    # 3k; the cap bounds how long a model stuck repeating itself can run.
+    # 0 = unbounded.
+    num_predict = _env_int("CHUTE_OCR_NUM_PREDICT", 4096)
+    options: dict[str, object] = {"temperature": 0}
+    if num_ctx:
+        options["num_ctx"] = num_ctx
+    if num_predict:
+        options["num_predict"] = num_predict
+    host = OLLAMA_HOST.rstrip("/")
+    if "://" not in host:
+        host = f"http://{host}"  # Ollama's own OLLAMA_HOST style: host:port
+
     chunks: list[str] = []
-    for page_no, total, png in _iter_pdf_pages(src, OCR_RENDER_DPI):
+    cut_off: list[str] = []
+    for page_no, total, png in _iter_pdf_pages(src, dpi):
         if progress is not None:
             progress(page_no, total)
-        text = _ollama_ocr_page(png, model=OLLAMA_OCR_MODEL, host=OLLAMA_HOST)
+        text, truncated = _ollama_ocr_page(
+            png, model=OLLAMA_OCR_MODEL, host=host, options=options, timeout=timeout
+        )
+        if truncated:
+            cut_off.append(f"{page_no}/{total}")
         if text:
             chunks.append(text)
     dst.write_text("\n\n---\n\n".join(chunks) + "\n")
+    if cut_off:
+        limit = (
+            f"CHUTE_OCR_NUM_PREDICT (now {num_predict})"
+            if num_predict else "CHUTE_OCR_NUM_CTX"
+        )
+        raise ConversionError(
+            f"text cut off on page {', '.join(cut_off)} (ran out of tokens); "
+            f"raise {limit} and rerun"
+        )
 
 
 def md_to_pdf(src: Path, dst: Path, css: list[Path]) -> None:
@@ -345,7 +457,7 @@ def route_tag(
     if (in_ext, out_ext) == ("pdf", "md"):
         if not ocr:
             return "pymupdf4llm"
-        if ocr_engine == "llama":
+        if ocr_engine == "ollama":
             return f"ollama:{OLLAMA_OCR_MODEL}"
         return "ocrmypdf+pymupdf4llm"
     if out_ext == "pdf":
@@ -384,29 +496,21 @@ def convert_one(
         return False
     # --ocr only reshapes the pdf→md route; it is a no-op for anything else.
     ocr = ocr and (in_ext, out_ext) == ("pdf", "md")
-    use_llama = ocr and ocr_engine == "llama"
-    if ocr:
-        route = pdf_to_md_llama if use_llama else pdf_to_md_ocr
+    tag = route_tag(in_ext, out_ext, ocr=ocr, ocr_engine=ocr_engine)
+    if ocr and ocr_engine == "ollama":
+        route = functools.partial(
+            pdf_to_md_ollama,
+            progress=lambda i, n: info(f"  page {i}/{n} → {tag}", verbose=verbose),
+        )
+    elif ocr:
+        route = pdf_to_md_ocr
     dst.parent.mkdir(parents=True, exist_ok=True)
     effective_css = css if out_ext in STYLED_OUTPUTS else []
-    info(
-        f"[{route_tag(in_ext, out_ext, ocr=ocr, ocr_engine=ocr_engine)}] "
-        f"{src_label} → {dst_label}",
-        verbose=verbose,
-    )
+    info(f"[{tag}] {src_label} → {dst_label}", verbose=verbose)
     try:
-        if use_llama:
-            pdf_to_md_llama(
-                src, dst, effective_css,
-                progress=lambda i, n: info(
-                    f"  page {i}/{n} → {route_tag(in_ext, out_ext, ocr=ocr, ocr_engine=ocr_engine)}",
-                    verbose=verbose,
-                ),
-            )
-        else:
-            route(src, dst, effective_css)
+        route(src, dst, effective_css)
     except ConversionError as e:
-        error(f"{src_label}: {e}")
+        warn(f"{src_label}: {e}")
         return False
     return True
 
@@ -466,9 +570,10 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--ocr-engine", choices=OCR_ENGINES, default=DEFAULT_OCR_ENGINE,
         help=(
             "OCR backend for --ocr: 'tesseract' (via ocrmypdf, the default) or "
-            "'llama' (a local vision model via Ollama, default qwen3-vl:8b). The "
-            "llama engine reads figures and complex layouts but needs a running "
-            "Ollama server; tune with CHUTE_OCR_MODEL / CHUTE_OLLAMA_HOST."
+            "'ollama' (a local vision model, default "
+            f"{DEFAULT_OLLAMA_OCR_MODEL}). The ollama engine reads figures and "
+            "complex layouts but needs a running Ollama server; tune with "
+            "CHUTE_OCR_MODEL / CHUTE_OLLAMA_HOST."
         ),
     )
     p.add_argument(

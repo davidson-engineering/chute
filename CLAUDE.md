@@ -1,7 +1,7 @@
 # chute — context for Claude
 
 A small CLI that converts between document formats by dispatching to the right
-tool (`pandoc`, `pymupdf4llm`, `weasyprint`, and — for `--ocr` — `ocrmypdf` or a
+tool (`pandoc`, `pymupdf4llm`, `weasyprint`, and, for `--ocr`, `ocrmypdf` or a
 local vision model via Ollama) for each (input, output) pair.
 
 ## Shape
@@ -11,6 +11,10 @@ local vision model via Ollama) for each (input, output) pair.
 - Each converter is a thin shell over a subprocess (pandoc) or a library call
   (`pymupdf4llm`). They should not print or log — `convert_one` owns
   user-facing output.
+- A converter that can't handle a file raises `ConversionError`;
+  `convert_one` reports it and a batch carries on. Run external tools through
+  `_run()` and open PDFs through `_open_pdf()` so their failures arrive that
+  way instead of as a traceback that aborts the batch.
 - Styling: bundled `src/chute/styles/default.css` with embedded woff2 fonts
   (IBM Plex Sans, JetBrains Mono). The fonts are load-bearing for reproducible
   PDF/HTML output, so don't strip them from packaging.

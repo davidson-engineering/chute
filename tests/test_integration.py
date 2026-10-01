@@ -4,6 +4,8 @@ Skipped automatically if the underlying tools aren't installed.
 """
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -80,6 +82,24 @@ def test_pdf_to_md_ocr_real(sample_md, tmp_path):
     rc = cli.main([str(pdf), "-o", str(dst), "--ocr"])
     assert rc == 0
     assert "Hello" in dst.read_text()
+
+
+@needs_weasyprint
+@needs_ocrmypdf
+def test_pdf_to_md_ocr_stdout_is_only_markdown(sample_md, tmp_path):
+    # pymupdf4llm's progress chatter must go to stderr, not into `-o -` output.
+    # Run a real process: in-process, pymupdf binds whatever sys.stdout pytest
+    # had installed when it was first imported.
+    pdf = tmp_path / "rendered.pdf"
+    assert cli.main([str(sample_md), "-o", str(pdf)]) == 0
+    proc = subprocess.run(
+        [sys.executable, "-m", "chute.cli", str(pdf), "-t", "md", "--ocr", "-o", "-"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "Hello" in proc.stdout
+    assert "Document parser messages" not in proc.stdout
+    assert "OCR on page" not in proc.stdout
 
 
 @needs_pandoc

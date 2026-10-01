@@ -62,7 +62,7 @@ uv tool install .
 ```text
 chute <input|-> [-o <output|->] [-f <format>] [-t <format>]
                 [-r] [--css <file>] [--no-style] [--ocr]
-                [--ocr-engine <tesseract|llama>] [-v|-q]
+                [--ocr-engine <tesseract|ollama>] [-v|-q]
 ```
 
 **Rules for choosing the output:**
@@ -80,16 +80,16 @@ chute <input|-> [-o <output|->] [-f <format>] [-t <format>]
 - For `pdf → md` only; a no-op for every other route
 - Use it for scanned or image-only PDFs whose text `pymupdf4llm` can't read
 - `--ocr-engine` picks the backend:
-  - `tesseract` (default) — lays down a Tesseract text layer with `ocrmypdf` before extraction. Requires `ocrmypdf` on `PATH` (`brew install ocrmypdf` / `sudo apt install ocrmypdf`)
-  - `llama` — rasterizes each page and has a local vision model transcribe it via [Ollama](https://ollama.com). Reads figures and complex layouts, at the cost of a running Ollama server and per-page inference. Requires `ollama serve` and a pulled model (`ollama pull qwen3-vl:8b`). Tune with the env vars below.
+  - `tesseract` (default): lays down a Tesseract text layer with `ocrmypdf` before extraction. Requires `ocrmypdf` on `PATH` (`brew install ocrmypdf` / `sudo apt install ocrmypdf`)
+  - `ollama`: rasterizes each page and has a local vision model transcribe it via [Ollama](https://ollama.com). Reads figures and complex layouts, at the cost of a running Ollama server and per-page inference. Requires `ollama serve` and a pulled model (`ollama pull qwen3-vl:8b-instruct`). If a page runs out of tokens, chute keeps what it got, names the page, and exits 1. Tune with the env vars below.
 
     | Env var | Default | Purpose |
     |---|---|---|
-    | `CHUTE_OCR_MODEL` | `qwen3-vl:8b` | Ollama vision model. Must be one the current engine supports — **`llama3.2-vision` no longer loads on Ollama ≥ 0.30** (its `mllama` architecture was dropped). Good picks: `qwen3-vl:8b`/`:4b`, `granite3.2-vision`, `minicpm-v`. |
-    | `CHUTE_OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
+    | `CHUTE_OCR_MODEL` | `qwen3-vl:8b-instruct` | Ollama vision model. Use a non-thinking one: the plain `qwen3-vl:8b` tag is the Thinking checkpoint, which spends a dense page's whole token budget reasoning and returns no text. **`llama3.2-vision` no longer loads on Ollama ≥ 0.30** (its `mllama` architecture was dropped). Good picks: `qwen3-vl:8b-instruct`/`:4b-instruct`, `granite3.2-vision`, `minicpm-v`. |
+    | `CHUTE_OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL (bare `host:port` means `http://`) |
     | `CHUTE_OCR_DPI` | `150` | Page rasterization DPI. Lower = fewer image tokens/faster; higher = finer detail |
     | `CHUTE_OCR_NUM_CTX` | `16384` | Context window per page (`0` = leave to the server). Capped because some models default to a 256k window that balloons memory and slows inference |
-    | `CHUTE_OCR_NUM_PREDICT` | `4096` | Max generated tokens per page (`0` = unbounded). Bounds vision models that fall into repetition loops on dense tables |
+    | `CHUTE_OCR_NUM_PREDICT` | `4096` | Max generated tokens per page (`0` = unbounded). Bounds how long a model stuck repeating itself can run; a dense 70-row table page needs about 3k |
     | `CHUTE_OCR_TIMEOUT` | `300` | Per-page HTTP timeout in seconds (`0` = no limit) |
 
 **Verbosity:**
@@ -103,8 +103,8 @@ chute <input|-> [-o <output|->] [-f <format>] [-t <format>]
 chute report.docx -o report.pdf                # docx → styled PDF
 chute report.docx -t html                      # → ./report.html, styled
 chute paper.pdf -t md                          # → ./paper.md
-chute scan.pdf -t md --ocr                      # scanned PDF → md via OCR (Tesseract)
-chute scan.pdf -t md --ocr --ocr-engine llama   # scanned PDF → md via local vision model (Ollama)
+chute scan.pdf -t md --ocr                     # scanned PDF → md via OCR (Tesseract)
+chute scan.pdf -t md --ocr --ocr-engine ollama # scanned PDF → md via local vision model (Ollama)
 chute notes.md -o notes.pdf --css print.css    # md → PDF with your CSS
 chute notes.md -o notes.pdf --no-style         # md → PDF, no styling at all
 chute ./docs -t pdf -r -o ./out                # batch: mirror tree, convert to PDF

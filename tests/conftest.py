@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import shutil
 import subprocess
 from pathlib import Path
@@ -45,23 +46,29 @@ def fake_pymupdf(monkeypatch):
 
     mod.to_markdown = to_markdown
     monkeypatch.setitem(__import__("sys").modules, "pymupdf4llm", mod)
+    # The test PDFs are fake bytes real pymupdf can't open; hand the stub the
+    # path in place of an opened document.
+    monkeypatch.setattr(
+        "chute.cli._open_pdf", lambda path: contextlib.nullcontext(str(path))
+    )
     return mod
 
 
 @pytest.fixture
 def fake_ollama(monkeypatch):
-    """Stub the Llama/Ollama OCR path so pdf→md --ocr-engine llama needs no PDF,
+    """Stub the Ollama OCR path so pdf→md --ocr-engine ollama needs no PDF,
     no pymupdf render, and no Ollama server.
 
     Rasterizing is faked to two pages; each POST to Ollama is captured on
-    `mod.requests` and answered with a per-page markdown stub.
+    `mod.requests`. Page N is answered with `mod.replies[N - 1]` if set,
+    otherwise a complete per-page markdown stub.
     """
     import io
     import json
     import types
     import urllib.request
 
-    mod = types.SimpleNamespace(requests=[])
+    mod = types.SimpleNamespace(requests=[], replies=[])
 
     monkeypatch.setattr(
         "chute.cli._iter_pdf_pages",
@@ -79,8 +86,11 @@ def fake_ollama(monkeypatch):
         payload = json.loads(req.data.decode("utf-8"))
         mod.requests.append((req.full_url, payload))
         page = len(mod.requests)
-        body = json.dumps({"response": f"# page {page}\n"}).encode("utf-8")
-        return FakeResponse(body)
+        if page <= len(mod.replies):
+            reply = mod.replies[page - 1]
+        else:
+            reply = {"response": f"# page {page}\n", "done_reason": "stop"}
+        return FakeResponse(json.dumps(reply).encode("utf-8"))
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     return mod

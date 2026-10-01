@@ -63,3 +63,7 @@ include = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+filterwarnings = [
+    # pymupdf's SWIG bindings trip a Python 3.12+ deprecation on import.
+    "ignore:builtin type .* has no __module__ attribute:DeprecationWarning",
+]
